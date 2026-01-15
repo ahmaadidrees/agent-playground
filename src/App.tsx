@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { extractTasksFromText } from './lib/agentParsing'
 import './App.css'
 
@@ -25,11 +27,17 @@ function App() {
   )
   const [commandInput, setCommandInput] = useState('git status')
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  const [plannerRunId, setPlannerRunId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const terminalRef = useRef<HTMLDivElement | null>(null)
+  const plannerRef = useRef<HTMLDivElement | null>(null)
   const xtermRef = useRef<Terminal | null>(null)
+  const plannerTermRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const plannerFitAddonRef = useRef<FitAddon | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
+  const plannerRunIdRef = useRef<string | null>(null)
+  const showLegacyPanels = false
 
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.id === selectedRepoId) ?? null,
@@ -144,6 +152,10 @@ function App() {
   }, [activeRunId])
 
   useEffect(() => {
+    plannerRunIdRef.current = plannerRunId
+  }, [plannerRunId])
+
+  useEffect(() => {
     if (activeTab === 'terminal') {
       setTimeout(() => fitAddonRef.current?.fit(), 0)
     }
@@ -187,19 +199,70 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = window.api.onCommandOutput((data) => {
-      if (activeRunId && data.runId !== activeRunId) return
-      const term = xtermRef.current
-      if (!term) return
-      if (data.kind === 'stdout' || data.kind === 'stderr') {
-        term.write(data.text ?? '')
-      } else if (data.kind === 'exit') {
-        term.writeln(`\r\n[exit ${data.code ?? 0}]`)
-      } else if (data.kind === 'error') {
-        term.writeln(`\r\n[error] ${data.text ?? ''}`)
+      const terminalRunId = activeRunIdRef.current
+      const plannerRun = plannerRunIdRef.current
+      if (terminalRunId && data.runId === terminalRunId) {
+        const term = xtermRef.current
+        if (!term) return
+        if (data.kind === 'stdout' || data.kind === 'stderr') {
+          term.write(data.text ?? '')
+        } else if (data.kind === 'exit') {
+          term.writeln(`\r\n[exit ${data.code ?? 0}]`)
+        } else if (data.kind === 'error') {
+          term.writeln(`\r\n[error] ${data.text ?? ''}`)
+        }
+      }
+      if (plannerRun && data.runId === plannerRun) {
+        const term = plannerTermRef.current
+        if (!term) return
+        if (data.kind === 'stdout' || data.kind === 'stderr') {
+          term.write(data.text ?? '')
+        } else if (data.kind === 'exit') {
+          term.writeln(`\r\n[exit ${data.code ?? 0}]`)
+          setPlannerRunId(null)
+        } else if (data.kind === 'error') {
+          term.writeln(`\r\n[error] ${data.text ?? ''}`)
+        }
       }
     })
     return unsubscribe
-  }, [activeRunId])
+  }, [])
+
+  useEffect(() => {
+    if (!plannerRef.current || plannerTermRef.current) return
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
+      fontSize: 13,
+      theme: {
+        background: '#1f1c16',
+        foreground: '#f7f3ed',
+      },
+    })
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(plannerRef.current)
+    fitAddon.fit()
+    const handleResize = () => fitAddon.fit()
+    window.addEventListener('resize', handleResize)
+    const resizeObserver = new ResizeObserver(handleResize)
+    resizeObserver.observe(plannerRef.current)
+    const dataDisposable = term.onData((data) => {
+      const runId = plannerRunIdRef.current
+      if (!runId) return
+      window.api.sendCommandInput({ runId, data }).catch(() => {})
+    })
+    plannerTermRef.current = term
+    plannerFitAddonRef.current = fitAddon
+    return () => {
+      dataDisposable.dispose()
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', handleResize)
+      term.dispose()
+      plannerTermRef.current = null
+      plannerFitAddonRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     const unsubscribe = window.api.onAgentOutput((data) => {
@@ -259,6 +322,41 @@ function App() {
       term?.focus()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Command failed to start.')
+    }
+  }
+
+  const handleStartPlanner = async () => {
+    setErrorMessage(null)
+    if (!selectedRepo) {
+      setErrorMessage('Select a repo before starting the planner.')
+      return
+    }
+    if (plannerRunId) {
+      setErrorMessage('Planner is already running.')
+      return
+    }
+    const term = plannerTermRef.current
+    term?.reset()
+    term?.writeln('$ codex')
+    term?.focus()
+    try {
+      const { runId } = await window.api.runCommand({
+        repoId: selectedRepo.id,
+        commandLine: 'codex',
+      })
+      setPlannerRunId(runId)
+      plannerFitAddonRef.current?.fit()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to start planner.')
+    }
+  }
+
+  const handleStopPlanner = async () => {
+    if (!plannerRunId) return
+    try {
+      await window.api.sendCommandInput({ runId: plannerRunId, data: '\u0003' })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to stop planner.')
     }
   }
 
@@ -523,6 +621,32 @@ function App() {
               )
             })}
           </div>
+
+          <div className="planner-panel">
+            <div className="planner-header">
+              <div>
+                <div className="eyebrow">Planner</div>
+                <div className="planner-title">Planning agent</div>
+              </div>
+              <div className="planner-actions">
+                <button className="ghost tiny" type="button" onClick={handleStopPlanner} disabled={!plannerRunId}>
+                  Stop
+                </button>
+                <button className="primary" type="button" onClick={handleStartPlanner} disabled={!selectedRepo || !!plannerRunId}>
+                  {plannerRunId ? 'Running' : 'Start'}
+                </button>
+              </div>
+            </div>
+            <div
+              className="planner-terminal"
+              onClick={() => {
+                plannerTermRef.current?.focus()
+              }}
+            >
+              <div className="planner-terminal-title">Codex (interactive)</div>
+              <div className="planner-terminal-body" ref={plannerRef} />
+            </div>
+          </div>
         </section>
 
         {activeTask ? (
@@ -557,172 +681,182 @@ function App() {
           </section>
         ) : null}
 
-        <section className="panel">
-          <div className="panel-tabs">
-            <button
-              className={`tab${activeTab === 'agent' ? ' active' : ''}`}
-              type="button"
-              onClick={() => setActiveTab('agent')}
-            >
-              Agent
-            </button>
-            <button
-              className={`tab${activeTab === 'terminal' ? ' active' : ''}`}
-              type="button"
-              onClick={() => setActiveTab('terminal')}
-            >
-              Terminal
-            </button>
-          </div>
-
-          {errorMessage ? <div className="error">{errorMessage}</div> : null}
-
-          <div className="panel-body">
-            <div className={`panel-section ${activeTab === 'terminal' ? 'active' : ''}`}>
-              <form className="command-form" onSubmit={handleRunCommand}>
-                <input
-                  className="command-input"
-                  value={commandInput}
-                  onChange={(event) => setCommandInput(event.target.value)}
-                  placeholder="git status"
-                  spellCheck={false}
-                />
-                <button className="primary" type="submit" disabled={!selectedRepo}>
-                  Run
-                </button>
-              </form>
-
-              <div className="terminal">
-                <div className="terminal-title">Terminal</div>
-                <div className="terminal-body" ref={terminalRef} />
-              </div>
+        {showLegacyPanels ? (
+          <section className="panel">
+            <div className="panel-tabs">
+              <button
+                className={`tab${activeTab === 'agent' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveTab('agent')}
+              >
+                Agent
+              </button>
+              <button
+                className={`tab${activeTab === 'terminal' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveTab('terminal')}
+              >
+                Terminal
+              </button>
             </div>
 
-            <div className={`panel-section ${activeTab === 'agent' ? 'active' : ''}`}>
-              <div className="agent-panel">
-                <div className="agent-sidebar">
-                  <div className="agent-controls">
-                    <div className="agent-control">
-                      <label>Agent</label>
-                      <select
-                        value={agentProvider}
-                        onChange={(event) => setAgentProvider(event.target.value as AgentSession['agentKey'])}
-                      >
-                        <option value="claude">Claude</option>
-                        <option value="gemini">Gemini</option>
-                        <option value="codex">Codex</option>
-                      </select>
-                    </div>
-                    <div className="agent-control">
-                      <label>Task</label>
-                      <select
-                        value={agentTaskId ?? ''}
-                        onChange={(event) => setAgentTaskId(event.target.value ? Number(event.target.value) : null)}
-                      >
-                        <option value="">No task</option>
-                        {tasks.map((task) => (
-                          <option key={task.id} value={task.id}>
-                            {task.title}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <button className="primary" type="button" onClick={() => handleCreateSession()} disabled={!selectedRepo}>
-                      New session
-                    </button>
-                  </div>
+            {errorMessage ? <div className="error">{errorMessage}</div> : null}
 
-                  <div className="agent-sessions">
-                    {agentSessions.length === 0 ? (
-                      <div className="column-empty">No sessions yet.</div>
-                    ) : (
-                      agentSessions.map((session) => {
-                        const task = session.taskId ? taskById.get(session.taskId) : null
-                        const isActive = session.id === activeSessionId
-                        const isRunning = Boolean(streamingBySession[session.id])
-                        return (
-                          <button
-                            key={session.id}
-                            type="button"
-                            className={`agent-session${isActive ? ' active' : ''}`}
-                            onClick={() => {
-                              setActiveSessionId(session.id)
-                              setActiveTab('agent')
-                            }}
-                          >
-                            <div className="agent-session-title">
-                              {session.agentKey}
-                              {isRunning ? <span className="agent-session-badge">Running</span> : null}
-                            </div>
-                            <div className="agent-session-subtitle">{task ? task.title : 'General session'}</div>
-                          </button>
-                        )
-                      })
-                    )}
-                  </div>
+            <div className="panel-body">
+              <div className={`panel-section ${activeTab === 'terminal' ? 'active' : ''}`}>
+                <form className="command-form" onSubmit={handleRunCommand}>
+                  <input
+                    className="command-input"
+                    value={commandInput}
+                    onChange={(event) => setCommandInput(event.target.value)}
+                    placeholder="git status"
+                    spellCheck={false}
+                  />
+                  <button className="primary" type="submit" disabled={!selectedRepo}>
+                    Run
+                  </button>
+                </form>
+
+                <div className="terminal">
+                  <div className="terminal-title">Terminal</div>
+                  <div className="terminal-body" ref={terminalRef} />
                 </div>
+              </div>
 
-                <div className="agent-chat">
-                  <div className="agent-chat-header">
-                    <div>
-                      <div className="agent-chat-title">
-                        {activeSession ? `${activeSession.agentKey} session` : 'No session selected'}
+              <div className={`panel-section agent-section ${activeTab === 'agent' ? 'active' : ''}`}>
+                <div className="agent-panel">
+                  <div className="agent-sidebar">
+                    <div className="agent-controls">
+                      <div className="agent-control">
+                        <label>Agent</label>
+                        <select
+                          value={agentProvider}
+                          onChange={(event) => setAgentProvider(event.target.value as AgentSession['agentKey'])}
+                        >
+                          <option value="claude">Claude</option>
+                          <option value="gemini">Gemini</option>
+                          <option value="codex">Codex</option>
+                        </select>
                       </div>
-                      <div className="agent-chat-subtitle">
-                        {activeSession?.taskId ? taskById.get(activeSession.taskId)?.title ?? 'Linked task' : 'No task linked'}
+                      <div className="agent-control">
+                        <label>Task</label>
+                        <select
+                          value={agentTaskId ?? ''}
+                          onChange={(event) => setAgentTaskId(event.target.value ? Number(event.target.value) : null)}
+                        >
+                          <option value="">No task</option>
+                          {tasks.map((task) => (
+                            <option key={task.id} value={task.id}>
+                              {task.title}
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                    </div>
-                    {activeSession && streamingBySession[activeSession.id] ? (
-                      <button className="ghost tiny" type="button" onClick={() => handleCancelRun(activeSession.id)}>
-                        Cancel
+                      <button className="primary" type="button" onClick={() => handleCreateSession()} disabled={!selectedRepo}>
+                        New session
                       </button>
-                    ) : null}
+                    </div>
+
+                    <div className="agent-sessions">
+                      {agentSessions.length === 0 ? (
+                        <div className="column-empty">No sessions yet.</div>
+                      ) : (
+                        agentSessions.map((session) => {
+                          const task = session.taskId ? taskById.get(session.taskId) : null
+                          const isActive = session.id === activeSessionId
+                          const isRunning = Boolean(streamingBySession[session.id])
+                          return (
+                            <button
+                              key={session.id}
+                              type="button"
+                              className={`agent-session${isActive ? ' active' : ''}`}
+                              onClick={() => {
+                                setActiveSessionId(session.id)
+                                setActiveTab('agent')
+                              }}
+                            >
+                              <div className="agent-session-title">
+                                {session.agentKey}
+                                {isRunning ? <span className="agent-session-badge">Running</span> : null}
+                              </div>
+                              <div className="agent-session-subtitle">{task ? task.title : 'General session'}</div>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
                   </div>
 
-                  <div className="agent-messages">
-                    {activeSessionId ? (
-                      <>
-                        {agentMessages.map((message) => (
-                          <div key={message.id} className={`agent-message ${message.role}`}>
-                            <div className="agent-message-content">{message.content}</div>
-                            {message.role === 'assistant' ? (
-                              <button
-                                className="ghost tiny"
-                                type="button"
-                                onClick={() => handleCreateTasksFromMessage(message)}
-                              >
-                                Create tasks
-                              </button>
-                            ) : null}
-                          </div>
-                        ))}
-                        {streamingBySession[activeSessionId] ? (
-                          <div className="agent-message assistant">
-                            <div className="agent-message-content">{streamingBySession[activeSessionId].text}</div>
-                          </div>
-                        ) : null}
-                      </>
-                    ) : (
-                      <div className="column-empty">Select a session to view messages.</div>
-                    )}
-                  </div>
+                  <div className="agent-chat">
+                    <div className="agent-chat-header">
+                      <div>
+                        <div className="agent-chat-title">
+                          {activeSession ? `${activeSession.agentKey} session` : 'No session selected'}
+                        </div>
+                        <div className="agent-chat-subtitle">
+                          {activeSession?.taskId
+                            ? taskById.get(activeSession.taskId)?.title ?? 'Linked task'
+                            : 'No task linked'}
+                        </div>
+                      </div>
+                      {activeSession && streamingBySession[activeSession.id] ? (
+                        <button className="ghost tiny" type="button" onClick={() => handleCancelRun(activeSession.id)}>
+                          Cancel
+                        </button>
+                      ) : null}
+                    </div>
 
-                  <form className="agent-input" onSubmit={handleSendAgentMessage}>
-                    <input
-                      value={agentInput}
-                      onChange={(event) => setAgentInput(event.target.value)}
-                      placeholder={activeSessionId ? 'Send a message' : 'Create a session to start chatting'}
-                      disabled={!activeSessionId}
-                    />
-                    <button className="primary" type="submit" disabled={!activeSessionId}>
-                      Send
-                    </button>
-                  </form>
+                    <div className="agent-messages">
+                      {activeSessionId ? (
+                        <>
+                          {agentMessages.map((message) => (
+                            <div key={message.id} className={`agent-message ${message.role}`}>
+                              <div className="agent-message-content">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                              </div>
+                              {message.role === 'assistant' ? (
+                                <button
+                                  className="ghost tiny"
+                                  type="button"
+                                  onClick={() => handleCreateTasksFromMessage(message)}
+                                >
+                                  Create tasks
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          {streamingBySession[activeSessionId] ? (
+                            <div className="agent-message assistant">
+                              <div className="agent-message-content">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {streamingBySession[activeSessionId].text}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="column-empty">Select a session to view messages.</div>
+                      )}
+                    </div>
+
+                    <form className="agent-input" onSubmit={handleSendAgentMessage}>
+                      <input
+                        value={agentInput}
+                        onChange={(event) => setAgentInput(event.target.value)}
+                        placeholder={activeSessionId ? 'Send a message' : 'Create a session to start chatting'}
+                        disabled={!activeSessionId}
+                      />
+                      <button className="primary" type="submit" disabled={!activeSessionId}>
+                        Send
+                      </button>
+                    </form>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
       </main>
     </div>
   )
