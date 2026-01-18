@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('tasks:move', payload),
   getTaskNote: (taskId: number) => ipcRenderer.invoke('tasks:note:get', taskId),
   saveTaskNote: (payload: { taskId: number; content: string }) => ipcRenderer.invoke('tasks:note:save', payload),
+  getDbPath: () => ipcRenderer.invoke('app:db:path'),
   listAgentSessions: (repoId?: number) => ipcRenderer.invoke('agents:sessions:list', repoId),
   createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null }) =>
     ipcRenderer.invoke('agents:sessions:create', payload),
@@ -18,7 +19,14 @@ contextBridge.exposeInMainWorld('api', {
   sendAgentMessage: (payload: { sessionId: number; content: string }) =>
     ipcRenderer.invoke('agents:message:send', payload),
   cancelAgentRun: (runId: string) => ipcRenderer.invoke('agents:run:cancel', runId),
-  runCommand: (payload: { repoId?: number; cwd?: string; command?: string; args?: string[]; commandLine?: string }) =>
+  runCommand: (payload: {
+    repoId?: number
+    cwd?: string
+    command?: string
+    args?: string[]
+    commandLine?: string
+    env?: Record<string, string>
+  }) => ipcRenderer.invoke('cmd:run', payload),
     ipcRenderer.invoke('cmd:run', payload),
   sendCommandInput: (payload: { runId: string; data: string }) => ipcRenderer.invoke('cmd:input', payload),
   onCommandOutput: (callback: (data: { runId: string; kind: string; text?: string; code?: number }) => void) => {

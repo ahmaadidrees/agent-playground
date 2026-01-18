@@ -13,6 +13,7 @@ import {
   createAgentRun,
   createAgentSession,
   getAgentSessionById,
+  getDbPath,
   getRepoById,
   getTaskById,
   getTaskNote,
@@ -187,6 +188,8 @@ function registerIpcHandlers() {
     return upsertTaskNote(payload.taskId, payload.content)
   })
 
+  ipcMain.handle('app:db:path', () => getDbPath())
+
   ipcMain.handle('agents:sessions:list', (_event, repoId?: number) => listAgentSessions(repoId))
 
   ipcMain.handle('agents:sessions:create', (_event, payload: { repoId: number; agentKey: AgentKey; taskId?: number | null }) => {
@@ -305,8 +308,18 @@ function registerIpcHandlers() {
 
   ipcMain.handle(
     'cmd:run',
-    (event, payload: { repoId?: number; cwd?: string; command?: string; args?: string[]; commandLine?: string }) => {
-      const { repoId, cwd, command, args = [], commandLine } = payload
+    (
+      event,
+      payload: {
+        repoId?: number
+        cwd?: string
+        command?: string
+        args?: string[]
+        commandLine?: string
+        env?: Record<string, string>
+      }
+    ) => {
+      const { repoId, cwd, command, args = [], commandLine, env = {} } = payload
       if (!commandLine && !command) {
         throw new Error('Command is required')
       }
@@ -334,7 +347,7 @@ function registerIpcHandlers() {
           cols: 120,
           rows: 30,
           cwd: workingDir,
-          env: { ...process.env, TERM: 'xterm-256color' },
+          env: { ...process.env, TERM: 'xterm-256color', ...env },
         })
         activeTerms.set(runId, term)
         term.onData((data) => {

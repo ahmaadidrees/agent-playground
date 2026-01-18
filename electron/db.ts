@@ -100,9 +100,13 @@ type AgentRunRow = {
 
 let db: Database.Database | null = null
 
+export function getDbPath() {
+  return path.join(app.getPath('userData'), 'agent-playground.sqlite3')
+}
+
 export function initDb() {
   if (db) return
-  const dbPath = path.join(app.getPath('userData'), 'agent-playground.sqlite3')
+  const dbPath = getDbPath()
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   db.exec(`

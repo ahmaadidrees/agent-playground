@@ -340,9 +340,17 @@ function App() {
     term?.writeln('$ codex')
     term?.focus()
     try {
+      const dbPath = await window.api.getDbPath()
       const { runId } = await window.api.runCommand({
         repoId: selectedRepo.id,
         commandLine: 'codex',
+        env: {
+          AGENT_PLAYGROUND_DB_PATH: dbPath,
+          AGENT_PLAYGROUND_REPO_ID: String(selectedRepo.id),
+          AGENT_PLAYGROUND_REPO_PATH: selectedRepo.path,
+          AGENT_PLAYGROUND_REPO_NAME: selectedRepo.name,
+          AGENT_PLAYGROUND_PLAN_DIR: 'docs/plans',
+        },
       })
       setPlannerRunId(runId)
       plannerFitAddonRef.current?.fit()

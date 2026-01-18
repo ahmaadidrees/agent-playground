@@ -56,14 +56,20 @@ interface Window {
     moveTask: (payload: { taskId: number; status: TaskStatus }) => Promise<Task>
     getTaskNote: (taskId: number) => Promise<TaskNote | null>
     saveTaskNote: (payload: { taskId: number; content: string }) => Promise<TaskNote>
+    getDbPath: () => Promise<string>
     listAgentSessions: (repoId?: number) => Promise<AgentSession[]>
     createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null }) => Promise<AgentSession>
     listAgentMessages: (sessionId: number) => Promise<AgentMessage[]>
     sendAgentMessage: (payload: { sessionId: number; content: string }) => Promise<{ runId: string }>
     cancelAgentRun: (runId: string) => Promise<void>
-    runCommand: (payload: { repoId?: number; cwd?: string; command?: string; args?: string[]; commandLine?: string }) => Promise<{
-      runId: string
-    }>
+    runCommand: (payload: {
+      repoId?: number
+      cwd?: string
+      command?: string
+      args?: string[]
+      commandLine?: string
+      env?: Record<string, string>
+    }) => Promise<{ runId: string }>
     sendCommandInput: (payload: { runId: string; data: string }) => Promise<void>
     onCommandOutput: (callback: (data: CommandOutput) => void) => () => void
     onAgentOutput: (
