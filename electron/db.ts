@@ -51,6 +51,39 @@ export type AgentRun = {
   endedAt: string | null
 }
 
+export type PlannerThread = {
+  id: number
+  repoId: number
+  title: string
+  worktreePath: string
+  baseBranch: string
+  model: string | null
+  reasoningEffort: string | null
+  sandbox: string | null
+  approval: string | null
+  createdAt: string
+  updatedAt: string
+  lastUsedAt: string | null
+}
+
+export type PlannerMessage = {
+  id: number
+  threadId: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  createdAt: string
+}
+
+export type PlannerRun = {
+  id: string
+  threadId: number
+  status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  command: string
+  cwd: string
+  startedAt: string
+  endedAt: string | null
+}
+
 type RepoRow = {
   id: number
   name: string
@@ -91,6 +124,39 @@ type AgentMessageRow = {
 type AgentRunRow = {
   id: string
   session_id: number
+  status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  command: string
+  cwd: string
+  started_at: string
+  ended_at: string | null
+}
+
+type PlannerThreadRow = {
+  id: number
+  repo_id: number
+  title: string
+  worktree_path: string
+  base_branch: string
+  model: string | null
+  reasoning_effort: string | null
+  sandbox: string | null
+  approval: string | null
+  created_at: string
+  updated_at: string
+  last_used_at: string | null
+}
+
+type PlannerMessageRow = {
+  id: number
+  thread_id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  created_at: string
+}
+
+type PlannerRunRow = {
+  id: string
+  thread_id: number
   status: 'running' | 'succeeded' | 'failed' | 'canceled'
   command: string
   cwd: string
@@ -170,6 +236,51 @@ export function initDb() {
       FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(run_id);
+    CREATE TABLE IF NOT EXISTS planner_threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      worktree_path TEXT NOT NULL,
+      base_branch TEXT NOT NULL,
+      model TEXT,
+      reasoning_effort TEXT,
+      sandbox TEXT,
+      approval TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_used_at TEXT,
+      FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_planner_threads_repo ON planner_threads(repo_id, created_at);
+    CREATE TABLE IF NOT EXISTS planner_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (thread_id) REFERENCES planner_threads(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_planner_messages_thread ON planner_messages(thread_id, created_at);
+    CREATE TABLE IF NOT EXISTS planner_runs (
+      id TEXT PRIMARY KEY,
+      thread_id INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      command TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      ended_at TEXT,
+      FOREIGN KEY (thread_id) REFERENCES planner_threads(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_planner_runs_thread ON planner_runs(thread_id);
+    CREATE TABLE IF NOT EXISTS planner_run_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (run_id) REFERENCES planner_runs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_planner_run_events_run ON planner_run_events(run_id);
   `)
 }
 
@@ -231,6 +342,45 @@ function mapAgentRun(row: AgentRunRow): AgentRun {
   return {
     id: row.id,
     sessionId: row.session_id,
+    status: row.status,
+    command: row.command,
+    cwd: row.cwd,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+  }
+}
+
+function mapPlannerThread(row: PlannerThreadRow): PlannerThread {
+  return {
+    id: row.id,
+    repoId: row.repo_id,
+    title: row.title,
+    worktreePath: row.worktree_path,
+    baseBranch: row.base_branch,
+    model: row.model,
+    reasoningEffort: row.reasoning_effort,
+    sandbox: row.sandbox,
+    approval: row.approval,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastUsedAt: row.last_used_at,
+  }
+}
+
+function mapPlannerMessage(row: PlannerMessageRow): PlannerMessage {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    role: row.role,
+    content: row.content,
+    createdAt: row.created_at,
+  }
+}
+
+function mapPlannerRun(row: PlannerRunRow): PlannerRun {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
     status: row.status,
     command: row.command,
     cwd: row.cwd,
@@ -325,6 +475,16 @@ export function updateTaskStatus(taskId: number, status: TaskStatus): Task {
     throw new Error('Failed to load updated task')
   }
   return mapTask(updated)
+}
+
+export function deleteTask(taskId: number): { id: number } {
+  const info = getDb()
+    .prepare('DELETE FROM tasks WHERE id = ?')
+    .run(taskId)
+  if (info.changes === 0) {
+    throw new Error('Task not found')
+  }
+  return { id: taskId }
 }
 
 export function getTaskNote(taskId: number): TaskNote | null {
@@ -439,5 +599,187 @@ export function updateAgentRunStatus(runId: string, status: AgentRun['status']):
 export function addAgentRunEvent(runId: string, kind: string, payload: string) {
   getDb()
     .prepare('INSERT INTO agent_run_events (run_id, kind, payload) VALUES (?, ?, ?)')
+    .run(runId, kind, payload)
+}
+
+export function listPlannerThreads(repoId?: number): PlannerThread[] {
+  if (repoId) {
+    const rows = getDb()
+      .prepare<PlannerThreadRow>(
+        'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE repo_id = ? ORDER BY last_used_at DESC, created_at DESC'
+      )
+      .all(repoId)
+    return rows.map(mapPlannerThread)
+  }
+  const rows = getDb()
+    .prepare<PlannerThreadRow>(
+      'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads ORDER BY last_used_at DESC, created_at DESC'
+    )
+    .all()
+  return rows.map(mapPlannerThread)
+}
+
+export function getPlannerThreadById(threadId: number): PlannerThread | null {
+  const row = getDb()
+    .prepare<PlannerThreadRow>(
+      'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE id = ?'
+    )
+    .get(threadId)
+  return row ? mapPlannerThread(row) : null
+}
+
+export function createPlannerThread(input: {
+  repoId: number
+  title: string
+  worktreePath: string
+  baseBranch: string
+  model?: string | null
+  reasoningEffort?: string | null
+  sandbox?: string | null
+  approval?: string | null
+}): PlannerThread {
+  const info = getDb()
+    .prepare(
+      'INSERT INTO planner_threads (repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      input.repoId,
+      input.title,
+      input.worktreePath,
+      input.baseBranch,
+      input.model ?? null,
+      input.reasoningEffort ?? null,
+      input.sandbox ?? null,
+      input.approval ?? null
+    )
+  const created = getDb()
+    .prepare<PlannerThreadRow>(
+      'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE id = ?'
+    )
+    .get(info.lastInsertRowid)
+  if (!created) {
+    throw new Error('Failed to load created planner thread')
+  }
+  return mapPlannerThread(created)
+}
+
+export function updatePlannerThread(threadId: number, updates: {
+  title?: string
+  model?: string | null
+  reasoningEffort?: string | null
+  sandbox?: string | null
+  approval?: string | null
+}): PlannerThread {
+  const existing = getPlannerThreadById(threadId)
+  if (!existing) {
+    throw new Error('Planner thread not found')
+  }
+  const next = {
+    title: updates.title ?? existing.title,
+    model: updates.model !== undefined ? updates.model : existing.model,
+    reasoningEffort: updates.reasoningEffort !== undefined ? updates.reasoningEffort : existing.reasoningEffort,
+    sandbox: updates.sandbox !== undefined ? updates.sandbox : existing.sandbox,
+    approval: updates.approval !== undefined ? updates.approval : existing.approval,
+  }
+  getDb()
+    .prepare(
+      'UPDATE planner_threads SET title = ?, model = ?, reasoning_effort = ?, sandbox = ?, approval = ?, updated_at = datetime(\'now\') WHERE id = ?'
+    )
+    .run(
+      next.title,
+      next.model,
+      next.reasoningEffort,
+      next.sandbox,
+      next.approval,
+      threadId
+    )
+  const updated = getPlannerThreadById(threadId)
+  if (!updated) {
+    throw new Error('Failed to load updated planner thread')
+  }
+  return updated
+}
+
+export function deletePlannerThread(threadId: number): { id: number } {
+  getDb()
+    .prepare(
+      'DELETE FROM planner_run_events WHERE run_id IN (SELECT id FROM planner_runs WHERE thread_id = ?)'
+    )
+    .run(threadId)
+  getDb()
+    .prepare('DELETE FROM planner_runs WHERE thread_id = ?')
+    .run(threadId)
+  getDb()
+    .prepare('DELETE FROM planner_messages WHERE thread_id = ?')
+    .run(threadId)
+  const info = getDb()
+    .prepare('DELETE FROM planner_threads WHERE id = ?')
+    .run(threadId)
+  if (info.changes === 0) {
+    throw new Error('Planner thread not found')
+  }
+  return { id: threadId }
+}
+
+export function listPlannerMessages(threadId: number): PlannerMessage[] {
+  const rows = getDb()
+    .prepare<PlannerMessageRow>(
+      'SELECT id, thread_id, role, content, created_at FROM planner_messages WHERE thread_id = ? ORDER BY created_at ASC'
+    )
+    .all(threadId)
+  return rows.map(mapPlannerMessage)
+}
+
+export function addPlannerMessage(threadId: number, role: PlannerMessage['role'], content: string): PlannerMessage {
+  const info = getDb()
+    .prepare('INSERT INTO planner_messages (thread_id, role, content) VALUES (?, ?, ?)')
+    .run(threadId, role, content)
+  getDb()
+    .prepare('UPDATE planner_threads SET updated_at = datetime(\'now\'), last_used_at = datetime(\'now\') WHERE id = ?')
+    .run(threadId)
+  const row = getDb()
+    .prepare<PlannerMessageRow>('SELECT id, thread_id, role, content, created_at FROM planner_messages WHERE id = ?')
+    .get(info.lastInsertRowid)
+  if (!row) {
+    throw new Error('Failed to load created planner message')
+  }
+  return mapPlannerMessage(row)
+}
+
+export function createPlannerRun(run: {
+  id: string
+  threadId: number
+  status: PlannerRun['status']
+  command: string
+  cwd: string
+}): PlannerRun {
+  getDb()
+    .prepare('INSERT INTO planner_runs (id, thread_id, status, command, cwd) VALUES (?, ?, ?, ?, ?)')
+    .run(run.id, run.threadId, run.status, run.command, run.cwd)
+  const row = getDb()
+    .prepare<PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
+    .get(run.id)
+  if (!row) {
+    throw new Error('Failed to load planner run')
+  }
+  return mapPlannerRun(row)
+}
+
+export function updatePlannerRunStatus(runId: string, status: PlannerRun['status']): PlannerRun {
+  getDb()
+    .prepare('UPDATE planner_runs SET status = ?, ended_at = datetime(\'now\') WHERE id = ?')
+    .run(status, runId)
+  const row = getDb()
+    .prepare<PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
+    .get(runId)
+  if (!row) {
+    throw new Error('Failed to load planner run')
+  }
+  return mapPlannerRun(row)
+}
+
+export function addPlannerRunEvent(runId: string, kind: string, payload: string) {
+  getDb()
+    .prepare('INSERT INTO planner_run_events (run_id, kind, payload) VALUES (?, ?, ?)')
     .run(runId, kind, payload)
 }

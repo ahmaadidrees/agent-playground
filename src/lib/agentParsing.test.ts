@@ -11,7 +11,7 @@ describe('extractTasksFromText', () => {
   })
 
   it('extracts JSON from surrounding text', () => {
-    const input = 'Here is the list:\n[{\"title\":\"Ship it\"},{\"title\":\"Review\"}]\nThanks!'
+    const input = 'Here is the list:\n[{"title":"Ship it"},{"title":"Review"}]\nThanks!'
     expect(extractTasksFromText(input)).toEqual([{ title: 'Ship it' }, { title: 'Review' }])
   })
 

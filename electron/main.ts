@@ -10,18 +10,29 @@ import {
   addAgentRunEvent,
   addRepo,
   addTask,
+  addPlannerMessage,
+  addPlannerRunEvent,
   createAgentRun,
   createAgentSession,
+  createPlannerRun,
+  createPlannerThread,
+  deletePlannerThread,
+  deleteTask,
   getAgentSessionById,
   getDbPath,
   getRepoById,
+  getPlannerThreadById,
   getTaskById,
   getTaskNote,
   initDb,
   listAgentMessages,
   listAgentSessions,
+  listPlannerMessages,
+  listPlannerThreads,
   listRepos,
   listTasks,
+  updatePlannerRunStatus,
+  updatePlannerThread,
   updateAgentRunStatus,
   updateTaskStatus,
   upsertTaskNote,
@@ -61,6 +72,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 const activeTerms = new Map<string, pty.IPty>()
 const activeAgentRuns = new Map<string, { proc: ReturnType<typeof spawn>; sessionId: number; canceled: boolean }>()
+const activePlannerRuns = new Map<string, { proc: ReturnType<typeof spawn>; threadId: number; canceled: boolean }>()
 
 ensurePtyHelperExecutable()
 
@@ -138,6 +150,57 @@ function buildPrompt(options: {
   return `${contextBlock}${options.transcript}`.trim()
 }
 
+function getRepoBaseRef(repoPath: string, requested?: string) {
+  if (requested && requested.trim()) return requested.trim()
+  try {
+    const branch = execFileSync('git', ['-C', repoPath, 'branch', '--show-current'], { encoding: 'utf8' }).trim()
+    if (branch) return branch
+  } catch {
+    // ignore
+  }
+  try {
+    const branch = execFileSync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim()
+    if (branch && branch !== 'HEAD') return branch
+  } catch {
+    // ignore
+  }
+  return execFileSync('git', ['-C', repoPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+}
+
+function createPlannerWorktree(repoPath: string, baseRef: string, worktreePath: string) {
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true })
+  execFileSync('git', ['-C', repoPath, 'worktree', 'add', '--detach', worktreePath, baseRef], {
+    stdio: 'pipe',
+  })
+}
+
+function removePlannerWorktree(repoPath: string, worktreePath: string) {
+  if (!fs.existsSync(worktreePath)) {
+    return { removed: false, warning: 'Worktree already missing.' }
+  }
+  let warning: string | undefined
+  try {
+    execFileSync('git', ['-C', repoPath, 'worktree', 'remove', '--force', worktreePath], {
+      stdio: 'pipe',
+    })
+  } catch (error) {
+    warning = error instanceof Error ? error.message : 'Failed to remove worktree.'
+  }
+  if (fs.existsSync(worktreePath)) {
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true })
+    } catch (error) {
+      warning = warning ?? (error instanceof Error ? error.message : 'Failed to delete worktree folder.')
+    }
+  }
+  try {
+    execFileSync('git', ['-C', repoPath, 'worktree', 'prune'], { stdio: 'pipe' })
+  } catch {
+    // ignore pruning failures
+  }
+  return { removed: !fs.existsSync(worktreePath), warning }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
@@ -148,6 +211,17 @@ function createWindow() {
     },
     minWidth: 900,
     minHeight: 600,
+  })
+
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const label = level === 0 ? 'log' : level === 1 ? 'warn' : 'error'
+    console.log(`[renderer:${label}] ${message} (${sourceId}:${line})`)
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[renderer:crash]', details)
+  })
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[renderer:load] ${errorCode} ${errorDescription} ${validatedURL}`)
   })
 
   // Test active push message to Renderer-process.
@@ -180,6 +254,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('tasks:move', (_event, payload: { taskId: number; status: TaskStatus }) => {
     return updateTaskStatus(payload.taskId, payload.status)
+  })
+
+  ipcMain.handle('tasks:delete', (_event, taskId: number) => {
+    return deleteTask(taskId)
   })
 
   ipcMain.handle('tasks:note:get', (_event, taskId: number) => getTaskNote(taskId))
@@ -289,6 +367,199 @@ function registerIpcHandlers() {
     entry.proc.kill('SIGTERM')
   })
 
+  ipcMain.handle('planner:threads:list', (_event, repoId?: number) => listPlannerThreads(repoId))
+
+  ipcMain.handle('planner:threads:create', (_event, payload: {
+    repoId: number
+    title?: string
+    baseBranch?: string
+    model?: string
+    reasoningEffort?: string
+    sandbox?: string
+    approval?: string
+  }) => {
+    const repo = getRepoById(payload.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const baseBranch = getRepoBaseRef(repo.path, payload.baseBranch)
+    const worktreeRoot = path.join(app.getPath('userData'), 'planner-worktrees', `repo-${repo.id}`)
+    const worktreePath = path.join(worktreeRoot, `thread-${randomUUID()}`)
+    createPlannerWorktree(repo.path, baseBranch, worktreePath)
+    try {
+      return createPlannerThread({
+        repoId: repo.id,
+        title: payload.title?.trim() || 'Planner Thread',
+        worktreePath,
+        baseBranch,
+        model: payload.model ?? null,
+        reasoningEffort: payload.reasoningEffort ?? null,
+        sandbox: payload.sandbox ?? null,
+        approval: payload.approval ?? null,
+      })
+    } catch (error) {
+      try {
+        removePlannerWorktree(repo.path, worktreePath)
+      } catch {
+        // ignore cleanup failures
+      }
+      throw error
+    }
+  })
+
+  ipcMain.handle('planner:threads:update', (_event, payload: {
+    threadId: number
+    title?: string
+    model?: string | null
+    reasoningEffort?: string | null
+    sandbox?: string | null
+    approval?: string | null
+  }) => {
+    return updatePlannerThread(payload.threadId, payload)
+  })
+
+  ipcMain.handle('planner:threads:delete', (_event, threadId: number) => {
+    const thread = getPlannerThreadById(threadId)
+    if (!thread) {
+      throw new Error('Planner thread not found')
+    }
+    const repo = getRepoById(thread.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const removal = removePlannerWorktree(repo.path, thread.worktreePath)
+    deletePlannerThread(threadId)
+    return {
+      id: threadId,
+      worktreeRemoved: removal.removed,
+      warning: removal.warning,
+    }
+  })
+
+  ipcMain.handle('planner:messages:list', (_event, threadId: number) => listPlannerMessages(threadId))
+
+  ipcMain.handle('planner:message:send', (event, payload: { threadId: number; content: string }) => {
+    const thread = getPlannerThreadById(payload.threadId)
+    if (!thread) {
+      throw new Error('Planner thread not found')
+    }
+    const repo = getRepoById(thread.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const content = payload.content.trim()
+    if (!content) {
+      throw new Error('Message is required')
+    }
+    if (!fs.existsSync(thread.worktreePath)) {
+      throw new Error('Planner worktree is missing')
+    }
+
+    addPlannerMessage(thread.id, 'user', content)
+    if (thread.title === 'Planner Thread') {
+      const nextTitle = content.trim().slice(0, 60)
+      if (nextTitle) {
+        updatePlannerThread(thread.id, { title: nextTitle })
+      }
+    }
+
+    const transcript = formatTranscript(listPlannerMessages(thread.id))
+    const prompt = buildPrompt({
+      repoPath: thread.worktreePath,
+      transcript,
+    })
+
+    const args: string[] = ['exec', '--color', 'never']
+    if (thread.model) {
+      args.push('-m', thread.model)
+    }
+    if (thread.reasoningEffort) {
+      args.push('-c', `model_reasoning_effort="${thread.reasoningEffort}"`)
+    }
+    if (thread.sandbox) {
+      args.push('-s', thread.sandbox)
+    }
+    if (thread.approval) {
+      args.push('-c', `approval_policy="${thread.approval}"`)
+    }
+    args.push('-')
+
+    const commandLine = ['codex', ...args].map(shellEscape).join(' ')
+    const runId = randomUUID()
+    createPlannerRun({
+      id: runId,
+      threadId: thread.id,
+      status: 'running',
+      command: commandLine,
+      cwd: thread.worktreePath,
+    })
+
+    const child = spawn('codex', args, {
+      cwd: thread.worktreePath,
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        AGENT_PLAYGROUND_DB_PATH: getDbPath(),
+        AGENT_PLAYGROUND_REPO_ID: String(repo.id),
+        AGENT_PLAYGROUND_REPO_PATH: thread.worktreePath,
+        AGENT_PLAYGROUND_REPO_NAME: repo.name,
+        AGENT_PLAYGROUND_PLAN_DIR: 'docs/plans',
+      },
+    })
+    activePlannerRuns.set(runId, { proc: child, threadId: thread.id, canceled: false })
+
+    const sendOutput = (data: { runId: string; threadId: number; kind: string; text?: string; code?: number }) => {
+      event.sender.send('planner:output', data)
+    }
+
+    let stdoutBuffer = ''
+    let stderrBuffer = ''
+
+    child.stdout.on('data', (data) => {
+      const text = data.toString()
+      stdoutBuffer += text
+      addPlannerRunEvent(runId, 'stdout', text)
+      sendOutput({ runId, threadId: thread.id, kind: 'stdout', text })
+    })
+    child.stderr.on('data', (data) => {
+      const text = data.toString()
+      stderrBuffer += text
+      addPlannerRunEvent(runId, 'stderr', text)
+      sendOutput({ runId, threadId: thread.id, kind: 'stderr', text })
+    })
+    child.on('error', (error) => {
+      const message = error.message
+      stderrBuffer += message
+      addPlannerRunEvent(runId, 'error', message)
+      sendOutput({ runId, threadId: thread.id, kind: 'error', text: message })
+    })
+    child.on('close', (code) => {
+      const canceled = activePlannerRuns.get(runId)?.canceled ?? false
+      const status = canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed'
+      updatePlannerRunStatus(runId, status)
+      activePlannerRuns.delete(runId)
+      const finalText = stdoutBuffer.trim() ? stdoutBuffer : stderrBuffer
+      if (finalText.trim()) {
+        addPlannerMessage(thread.id, 'assistant', finalText.trim())
+      }
+      sendOutput({ runId, threadId: thread.id, kind: 'exit', code: code ?? -1 })
+    })
+
+    child.stdin.write(prompt)
+    child.stdin.end()
+
+    return { runId }
+  })
+
+  ipcMain.handle('planner:run:cancel', (_event, runId: string) => {
+    const entry = activePlannerRuns.get(runId)
+    if (!entry) {
+      throw new Error('Run not found')
+    }
+    entry.canceled = true
+    entry.proc.kill('SIGTERM')
+  })
+
   ipcMain.handle('repos:pick', async () => {
     if (!win) return { canceled: true }
     const result = await dialog.showOpenDialog(win, {
@@ -311,6 +582,7 @@ function registerIpcHandlers() {
     (
       event,
       payload: {
+        runId?: string
         repoId?: number
         cwd?: string
         command?: string
@@ -332,7 +604,7 @@ function registerIpcHandlers() {
         throw new Error('Working directory is required')
       }
 
-      const runId = randomUUID()
+      const runId = payload.runId ?? randomUUID()
       const send = (message: { runId: string; kind: string; text?: string; code?: number }) => {
         event.sender.send('cmd:output', message)
       }
