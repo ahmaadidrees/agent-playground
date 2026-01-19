@@ -27,7 +27,6 @@ contextBridge.exposeInMainWorld('api', {
     commandLine?: string
     env?: Record<string, string>
   }) => ipcRenderer.invoke('cmd:run', payload),
-    ipcRenderer.invoke('cmd:run', payload),
   sendCommandInput: (payload: { runId: string; data: string }) => ipcRenderer.invoke('cmd:input', payload),
   onCommandOutput: (callback: (data: { runId: string; kind: string; text?: string; code?: number }) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, data: unknown) => {
