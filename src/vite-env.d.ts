@@ -7,7 +7,7 @@ type Repo = {
   createdAt: string
 }
 
-type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
+type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
 
 type Task = {
   id: number
@@ -15,12 +15,39 @@ type Task = {
   title: string
   status: TaskStatus
   createdAt: string
+  assignedAgentId: number | null
+  claimedAt: string | null
+  reviewRequestedAt: string | null
+  reviewedAt: string | null
+  reviewedByAgentId: number | null
 }
 
 type TaskNote = {
   taskId: number
   content: string
   updatedAt: string
+}
+
+type Agent = {
+  id: number
+  repoId: number
+  name: string
+  provider: 'claude' | 'gemini' | 'codex'
+  workspacePath: string | null
+  status: 'active' | 'paused'
+  createdAt: string
+  updatedAt: string
+}
+
+type TaskValidation = {
+  id: number
+  taskId: number
+  agentId: number | null
+  command: string
+  ok: boolean
+  output: string
+  cwd: string
+  createdAt: string
 }
 
 type AgentSession = {
@@ -127,10 +154,28 @@ interface Window {
     listTasks: (repoId?: number) => Promise<Task[]>
     addTask: (payload: { repoId: number; title: string; status: TaskStatus }) => Promise<Task>
     moveTask: (payload: { taskId: number; status: TaskStatus }) => Promise<Task>
+    assignTask: (payload: { taskId: number; agentId: number | null }) => Promise<Task>
+    claimTask: (payload: { taskId: number; agentId: number }) => Promise<Task>
+    releaseTask: (payload: { taskId: number }) => Promise<Task>
+    requestTaskReview: (payload: { taskId: number }) => Promise<Task>
+    approveTaskReview: (payload: { taskId: number; reviewerAgentId?: number | null }) => Promise<Task>
+    requestTaskChanges: (payload: { taskId: number }) => Promise<Task>
+    listTaskValidations: (payload: { taskId: number }) => Promise<TaskValidation[]>
+    runTaskValidation: (payload: { taskId: number; command: string; agentId?: number | null }) => Promise<TaskValidation>
     deleteTask: (taskId: number) => Promise<{ id: number }>
     getTaskNote: (taskId: number) => Promise<TaskNote | null>
     saveTaskNote: (payload: { taskId: number; content: string }) => Promise<TaskNote>
     getDbPath: () => Promise<string>
+    listAgents: (repoId?: number) => Promise<Agent[]>
+    createAgent: (payload: { repoId: number; name: string; provider: 'claude' | 'gemini' | 'codex'; workspacePath?: string | null }) => Promise<Agent>
+    updateAgent: (payload: {
+      agentId: number
+      name?: string
+      provider?: 'claude' | 'gemini' | 'codex'
+      workspacePath?: string | null
+      status?: 'active' | 'paused'
+    }) => Promise<Agent>
+    deleteAgent: (agentId: number) => Promise<{ id: number }>
     listAgentSessions: (repoId?: number) => Promise<AgentSession[]>
     createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null }) => Promise<AgentSession>
     listAgentMessages: (sessionId: number) => Promise<AgentMessage[]>

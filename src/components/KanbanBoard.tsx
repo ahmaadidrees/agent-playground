@@ -13,9 +13,10 @@ import {
   AlertTriangle,
   XCircle,
   Ban,
+  Eye,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import type { Task, TaskStatus } from '../types'
+import type { Agent, Task, TaskStatus } from '../types'
 
 type StatusIcon = React.ComponentType<{ className?: string }>
 
@@ -27,19 +28,24 @@ interface KanbanBoardProps {
   onAddTask: (title: string) => void
   onDeleteTask: (taskId: number) => void
   isRepoSelected: boolean
+  agents: Agent[]
+  activeAgentId: number | null
+  onClaimTask: (taskId: number) => void
 }
 
 const statusConfig: Record<TaskStatus, { title: string; icon: StatusIcon; color: string; bgColor: string }> = {
   proposed: { title: 'Proposed', icon: Inbox, color: 'text-amber-500', bgColor: 'bg-amber-50' },
   backlog: { title: 'Backlog', icon: Clock, color: 'text-blue-500', bgColor: 'bg-blue-50' },
   in_progress: { title: 'In Progress', icon: PlayCircle, color: 'text-indigo-500', bgColor: 'bg-indigo-50' },
+  review: { title: 'Review', icon: Eye, color: 'text-violet-500', bgColor: 'bg-violet-50' },
   blocked: { title: 'Blocked', icon: AlertTriangle, color: 'text-orange-500', bgColor: 'bg-orange-50' },
   failed: { title: 'Failed', icon: XCircle, color: 'text-rose-500', bgColor: 'bg-rose-50' },
   canceled: { title: 'Canceled', icon: Ban, color: 'text-slate-500', bgColor: 'bg-slate-100' },
   done: { title: 'Done', icon: CheckCircle2, color: 'text-emerald-500', bgColor: 'bg-emerald-50' },
 }
 
-const statusOrder: TaskStatus[] = ['proposed', 'backlog', 'in_progress', 'blocked', 'failed', 'canceled', 'done']
+const statusOrder: TaskStatus[] = ['proposed', 'backlog', 'in_progress', 'review', 'blocked', 'failed', 'canceled', 'done']
+const progressionOrder: TaskStatus[] = ['proposed', 'backlog', 'in_progress', 'review', 'done']
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   tasks,
@@ -49,8 +55,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onAddTask,
   onDeleteTask,
   isRepoSelected,
+  agents,
+  activeAgentId,
+  onClaimTask,
 }) => {
   const [newTaskInput, setNewTaskInput] = React.useState('')
+  const agentById = React.useMemo(() => {
+    return new Map(agents.map((agent) => [agent.id, agent]))
+  }, [agents])
+  const activeAgent = activeAgentId ? agentById.get(activeAgentId) ?? null : null
 
   const handleAddTask = (e: React.FormEvent) => {
     e.preventDefault()
@@ -61,9 +74,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   }
 
   const handleStepTask = (task: Task, direction: 'prev' | 'next') => {
-    const index = statusOrder.indexOf(task.status)
+    const index = progressionOrder.indexOf(task.status)
+    if (index === -1) return
     const targetIndex = direction === 'next' ? index + 1 : index - 1
-    const nextStatus = statusOrder[targetIndex]
+    const nextStatus = progressionOrder[targetIndex]
     if (nextStatus) {
       onMoveTask(task.id, nextStatus)
     }
@@ -75,6 +89,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
         <div>
           <h2 className="text-2xl font-bold text-amber-950 tracking-tight">Focus Board</h2>
           <p className="text-sm text-amber-900/50 font-medium">Manage your active tasks and priorities</p>
+          <p className="text-[11px] text-amber-900/40 font-semibold">
+            Active agent: {activeAgent ? activeAgent.name : 'Select an agent to claim tasks'}
+          </p>
         </div>
         <form onSubmit={handleAddTask} className="flex items-center gap-2">
           <div className="relative w-full md:w-auto">
@@ -139,42 +156,63 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                           className={cn(
                             "group p-4 rounded-2xl border bg-white shadow-sm hover:shadow-md hover:border-amber-500/30 transition-all cursor-pointer flex flex-col gap-3 relative overflow-hidden",
                             activeTaskId === task.id ? "border-amber-500 ring-2 ring-amber-500/10" : "border-amber-900/5"
-                          )}
-                        >
-                          {activeTaskId === task.id && (
-                            <div className="absolute top-0 left-0 w-1 h-full bg-amber-500" />
-                          )}
-                          <h3 className="font-semibold text-[13px] text-amber-950 leading-tight group-hover:text-amber-600 transition-colors">
-                            {task.title}
-                          </h3>
+                        )}
+                      >
+                        {activeTaskId === task.id && (
+                          <div className="absolute top-0 left-0 w-1 h-full bg-amber-500" />
+                        )}
+                        <h3 className="font-semibold text-[13px] text-amber-950 leading-tight group-hover:text-amber-600 transition-colors">
+                          {task.title}
+                        </h3>
 
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] text-amber-900/40 font-medium">
-                              #{task.id}
+                        {task.assignedAgentId && (
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-1 rounded-full bg-amber-900/5 text-[10px] font-bold uppercase tracking-widest text-amber-900/50">
+                              {agentById.get(task.assignedAgentId)?.name ?? `Agent ${task.assignedAgentId}`}
                             </span>
-                            <div className="flex items-center gap-1">
-                              {statusOrder.indexOf(task.status) > 0 && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleStepTask(task, 'prev')
-                                  }}
-                                  className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
-                                >
-                                  <ChevronLeft className="w-3 h-3" />
-                                </button>
-                              )}
-                              {statusOrder.indexOf(task.status) < statusOrder.length - 1 && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleStepTask(task, 'next')
-                                  }}
-                                  className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
-                                >
-                                  <ChevronRight className="w-3 h-3" />
-                                </button>
-                              )}
+                          </div>
+                        )}
+                        
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-amber-900/40 font-medium">
+                            #{task.id}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {!task.assignedAgentId && task.status !== 'done' && task.status !== 'canceled' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onClaimTask(task.id)
+                                }}
+                                disabled={!activeAgentId}
+                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest text-amber-600 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
+                                title={activeAgentId ? 'Claim task' : 'Select an agent to claim'}
+                              >
+                                Claim
+                              </button>
+                            )}
+                            {progressionOrder.indexOf(task.status) > 0 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleStepTask(task, 'prev')
+                                }}
+                                className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
+                              >
+                                <ChevronLeft className="w-3 h-3" />
+                              </button>
+                            )}
+                            {progressionOrder.indexOf(task.status) > -1 && progressionOrder.indexOf(task.status) < progressionOrder.length - 1 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleStepTask(task, 'next')
+                                }}
+                                className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
+                              >
+                                <ChevronRight className="w-3 h-3" />
+                              </button>
+                            )}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()

@@ -4,7 +4,7 @@ export interface Repo {
   path: string
 }
 
-export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
+export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
 
 export interface Task {
   id: number
@@ -12,6 +12,11 @@ export interface Task {
   title: string
   status: TaskStatus
   createdAt: string
+  assignedAgentId: number | null
+  claimedAt: string | null
+  reviewRequestedAt: string | null
+  reviewedAt: string | null
+  reviewedByAgentId: number | null
 }
 
 export interface AgentSession {
@@ -19,6 +24,28 @@ export interface AgentSession {
   repoId: number
   agentKey: 'claude' | 'gemini' | 'codex'
   taskId: number | null
+}
+
+export interface Agent {
+  id: number
+  repoId: number
+  name: string
+  provider: 'claude' | 'gemini' | 'codex'
+  workspacePath: string | null
+  status: 'active' | 'paused'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TaskValidation {
+  id: number
+  taskId: number
+  agentId: number | null
+  command: string
+  ok: boolean
+  output: string
+  cwd: string
+  createdAt: string
 }
 
 export interface AgentMessage {

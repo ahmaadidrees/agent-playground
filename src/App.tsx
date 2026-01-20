@@ -5,11 +5,13 @@ import { TaskDrawer } from './components/TaskDrawer'
 import { Layout } from './components/Layout'
 import { PlannerPanel } from './components/PlannerPanel'
 import { OrchestratorPanel } from './components/OrchestratorPanel'
+import { AgentsPanel } from './components/AgentsPanel'
 import { RepoToolbar } from './components/RepoToolbar'
 import { ResizableSidebar } from './components/ResizableSidebar'
 import { extractTasksFromText } from './lib/agentParsing'
 import { cn } from './lib/utils'
 import type {
+  Agent,
   OrchestratorRunEvent,
   OrchestratorRun,
   OrchestratorTaskRun,
@@ -20,6 +22,7 @@ import type {
   StreamingMessage,
   Task,
   TaskStatus,
+  TaskValidation,
 } from './types'
 
 const getErrorMessage = (error: unknown, fallback: string) => {
@@ -48,6 +51,9 @@ function App() {
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null)
   const [taskNote, setTaskNote] = useState('')
   const [taskNoteStatus, setTaskNoteStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [activeAgentId, setActiveAgentId] = useState<number | null>(null)
+  const [taskValidations, setTaskValidations] = useState<TaskValidation[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null)
 
@@ -74,11 +80,11 @@ function App() {
       return defaultOrchestratorConfig
     }
   })
-  const [sidebarView, setSidebarView] = useState<'planner' | 'orchestrator'>(() => {
+  const [sidebarView, setSidebarView] = useState<'planner' | 'orchestrator' | 'agents'>(() => {
     if (typeof window === 'undefined') return 'planner'
     try {
       const stored = window.localStorage.getItem('sidebarView')
-      if (stored === 'planner' || stored === 'orchestrator') {
+      if (stored === 'planner' || stored === 'orchestrator' || stored === 'agents') {
         return stored
       }
       return 'planner'
@@ -103,6 +109,14 @@ function App() {
   const activeOrchestratorRun = useMemo(
     () => (activeOrchestratorRunId ? orchestratorRuns.find((run) => run.id === activeOrchestratorRunId) ?? null : null),
     [activeOrchestratorRunId, orchestratorRuns]
+  )
+  const activeAgent = useMemo(
+    () => (activeAgentId ? agents.find((agent) => agent.id === activeAgentId) ?? null : null),
+    [activeAgentId, agents]
+  )
+  const assignedAgent = useMemo(
+    () => (activeTask?.assignedAgentId ? agents.find((agent) => agent.id === activeTask.assignedAgentId) ?? null : null),
+    [activeTask, agents]
   )
 
   // Initial load
@@ -178,6 +192,39 @@ function App() {
       })
       .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load task note.')))
   }, [activeTaskId])
+
+  useEffect(() => {
+    if (!activeTaskId) {
+      setTaskValidations([])
+      return
+    }
+    window.api
+      .listTaskValidations({ taskId: activeTaskId })
+      .then(setTaskValidations)
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load task validations.')))
+  }, [activeTaskId])
+
+  // Agents
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setAgents([])
+      setActiveAgentId(null)
+      return
+    }
+    window.api
+      .listAgents(selectedRepoId)
+      .then((data) => {
+        setAgents(data)
+        if (data.length === 0) {
+          setActiveAgentId(null)
+          return
+        }
+        if (!activeAgentId || !data.find((agent) => agent.id === activeAgentId)) {
+          setActiveAgentId(data[0].id)
+        }
+      })
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load agents.')))
+  }, [selectedRepoId, activeAgentId])
 
   // Planner session list
   useEffect(() => {
@@ -465,6 +512,119 @@ function App() {
     }
   }
 
+  const handleCreateAgent = async (payload: { name: string; provider: Agent['provider']; workspacePath?: string | null }) => {
+    if (!selectedRepo) return
+    try {
+      const agent = await window.api.createAgent({
+        repoId: selectedRepo.id,
+        name: payload.name,
+        provider: payload.provider,
+        workspacePath: payload.workspacePath ?? null,
+      })
+      setAgents((prev) => [agent, ...prev])
+      setActiveAgentId(agent.id)
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to create agent.'))
+    }
+  }
+
+  const handleUpdateAgent = async (payload: {
+    agentId: number
+    name?: string
+    provider?: Agent['provider']
+    workspacePath?: string | null
+    status?: Agent['status']
+  }) => {
+    try {
+      const updated = await window.api.updateAgent(payload)
+      setAgents((prev) => prev.map((agent) => (agent.id === updated.id ? updated : agent)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to update agent.'))
+    }
+  }
+
+  const handleDeleteAgent = async (agentId: number) => {
+    const agent = agents.find((item) => item.id === agentId)
+    if (!agent) return
+    const confirmDelete = window.confirm(`Delete "${agent.name}"? This does not remove any worktree data.`)
+    if (!confirmDelete) return
+    try {
+      await window.api.deleteAgent(agentId)
+      setAgents((prev) => prev.filter((item) => item.id !== agentId))
+      setActiveAgentId((prev) => (prev === agentId ? null : prev))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to delete agent.'))
+    }
+  }
+
+  const handleAssignTask = async (taskId: number, agentId: number | null) => {
+    try {
+      const updated = await window.api.assignTask({ taskId, agentId })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to assign task.'))
+    }
+  }
+
+  const handleClaimTask = async (taskId: number) => {
+    if (!activeAgentId) {
+      setNoticeMessage('Select an agent to claim tasks.')
+      setTimeout(() => setNoticeMessage(null), 2500)
+      return
+    }
+    try {
+      const updated = await window.api.claimTask({ taskId, agentId: activeAgentId })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to claim task.'))
+    }
+  }
+
+  const handleReleaseTask = async (taskId: number) => {
+    try {
+      const updated = await window.api.releaseTask({ taskId })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to release task.'))
+    }
+  }
+
+  const handleRequestReview = async (taskId: number) => {
+    try {
+      const updated = await window.api.requestTaskReview({ taskId })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to request review.'))
+    }
+  }
+
+  const handleApproveReview = async (taskId: number, reviewerAgentId?: number | null) => {
+    try {
+      const updated = await window.api.approveTaskReview({ taskId, reviewerAgentId: reviewerAgentId ?? null })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to approve review.'))
+    }
+  }
+
+  const handleRequestChanges = async (taskId: number) => {
+    try {
+      const updated = await window.api.requestTaskChanges({ taskId })
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to request changes.'))
+    }
+  }
+
+  const handleRunValidation = async (payload: { taskId: number; command: string; agentId?: number | null }) => {
+    try {
+      const validation = await window.api.runTaskValidation(payload)
+      setTaskValidations((prev) => [validation, ...prev])
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to run validation.'))
+    }
+  }
+
   const handleCreatePlannerThread = async () => {
     if (!selectedRepo) return
     try {
@@ -646,6 +806,18 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setSidebarView('agents')}
+                  className={cn(
+                    "flex-1 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-xl transition-all",
+                    sidebarView === 'agents'
+                      ? "bg-white text-amber-900 shadow-sm"
+                      : "text-amber-900/50 hover:text-amber-900"
+                  )}
+                >
+                  Agents
+                </button>
+                <button
+                  type="button"
                   onClick={() => setSidebarView('orchestrator')}
                   className={cn(
                     "flex-1 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-xl transition-all",
@@ -679,6 +851,17 @@ function App() {
                   onUpdateThread={handleUpdatePlannerThread}
                   onExtractTasks={handleExtractPlannerTasks}
                 />
+              ) : sidebarView === 'agents' ? (
+                <AgentsPanel
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  tasks={tasks}
+                  isRepoSelected={!!selectedRepo}
+                  onSelectAgent={setActiveAgentId}
+                  onCreateAgent={handleCreateAgent}
+                  onUpdateAgent={handleUpdateAgent}
+                  onDeleteAgent={handleDeleteAgent}
+                />
               ) : (
                 <OrchestratorPanel
                   runs={orchestratorRuns}
@@ -709,6 +892,9 @@ function App() {
           onAddTask={handleAddTask}
           onDeleteTask={handleDeleteTask}
           isRepoSelected={!!selectedRepo}
+          agents={agents}
+          activeAgentId={activeAgentId}
+          onClaimTask={handleClaimTask}
         />
       </div>
 
@@ -717,10 +903,20 @@ function App() {
         repo={selectedRepo}
         note={taskNote}
         noteStatus={taskNoteStatus}
+        agents={agents}
+        assignedAgent={assignedAgent}
+        activeAgent={activeAgent}
+        validations={taskValidations}
         onClose={() => setActiveTaskId(null)}
         onNoteChange={setTaskNote}
         onSaveNote={handleSaveNote}
         onDeleteTask={handleDeleteTask}
+        onAssignAgent={handleAssignTask}
+        onReleaseTask={handleReleaseTask}
+        onRequestReview={handleRequestReview}
+        onApproveReview={handleApproveReview}
+        onRequestChanges={handleRequestChanges}
+        onRunValidation={handleRunValidation}
       />
     </Layout>
   )

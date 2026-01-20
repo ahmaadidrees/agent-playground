@@ -2,32 +2,59 @@ import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Save, MessageSquare, Calendar, Tag, ChevronRight, Hash, Trash2 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import type { Task, Repo } from '../types'
+import type { Agent, Task, TaskValidation, Repo } from '../types'
 
 interface TaskDrawerProps {
   task: Task | null
   repo: Repo | null
   note: string
   noteStatus: 'idle' | 'saving' | 'saved'
+  agents: Agent[]
+  assignedAgent: Agent | null
+  activeAgent: Agent | null
+  validations: TaskValidation[]
   onClose: () => void
   onNoteChange: (note: string) => void
   onSaveNote: () => void
   onSendToAgent?: (taskId: number) => void
   onDeleteTask?: (taskId: number) => void
+  onAssignAgent: (taskId: number, agentId: number | null) => void
+  onReleaseTask: (taskId: number) => void
+  onRequestReview: (taskId: number) => void
+  onApproveReview: (taskId: number, reviewerAgentId?: number | null) => void
+  onRequestChanges: (taskId: number) => void
+  onRunValidation: (payload: { taskId: number; command: string; agentId?: number | null }) => void
 }
 
 export const TaskDrawer: React.FC<TaskDrawerProps> = ({
   task,
+  repo,
   note,
   noteStatus,
+  agents,
+  assignedAgent,
+  activeAgent,
+  validations,
   onClose,
   onNoteChange,
   onSaveNote,
   onSendToAgent,
   onDeleteTask,
+  onAssignAgent,
+  onReleaseTask,
+  onRequestReview,
+  onApproveReview,
+  onRequestChanges,
+  onRunValidation,
 }) => {
   const showAgentAction = Boolean(onSendToAgent)
   const showDeleteAction = Boolean(onDeleteTask)
+  const [validationCommand, setValidationCommand] = React.useState('')
+  const reviewerAgentId = activeAgent?.id ?? assignedAgent?.id ?? null
+
+  React.useEffect(() => {
+    setValidationCommand('')
+  }, [task?.id])
 
   return (
     <AnimatePresence>
@@ -82,6 +109,131 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                       </span>
                       <span className="text-sm font-bold text-amber-900/80">{new Date(task.createdAt).toLocaleDateString()}</span>
                     </div>
+                  </div>
+
+                  <div className="p-5 rounded-3xl bg-white/80 border border-amber-900/10 shadow-sm flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Assignment</div>
+                      {task.assignedAgentId && (
+                        <button
+                          onClick={() => onReleaseTask(task.id)}
+                          className="text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:text-rose-600"
+                        >
+                          Release
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-semibold text-amber-900/60">Assignee</label>
+                      <select
+                        value={task.assignedAgentId ?? ''}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          onAssignAgent(task.id, value ? Number(value) : null)
+                        }}
+                        className="px-3 py-2 rounded-2xl border border-amber-900/10 bg-white text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      >
+                        <option value="">Unassigned</option>
+                        {agents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name} · {agent.provider}
+                          </option>
+                        ))}
+                      </select>
+                      {assignedAgent ? (
+                        <div className="text-[11px] text-amber-900/50">
+                          Claimed {task.claimedAt ? new Date(task.claimedAt).toLocaleString() : '—'} · {assignedAgent.workspacePath || 'No workspace set'}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-amber-900/40">Select an agent to claim this task.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="p-5 rounded-3xl bg-amber-50/40 border border-amber-900/10 flex flex-col gap-3">
+                    <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Review Flow</div>
+                    {task.status === 'in_progress' && (
+                      <button
+                        onClick={() => onRequestReview(task.id)}
+                        className="px-4 py-2 rounded-2xl bg-amber-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-amber-500/20"
+                      >
+                        Request Review
+                      </button>
+                    )}
+                    {task.status === 'review' && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          onClick={() => onApproveReview(task.id, reviewerAgentId)}
+                          className="px-4 py-2 rounded-2xl bg-emerald-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-emerald-500/20"
+                        >
+                          Approve &amp; Done
+                        </button>
+                        <button
+                          onClick={() => onRequestChanges(task.id)}
+                          className="px-4 py-2 rounded-2xl bg-rose-500/10 text-rose-600 text-xs font-bold uppercase tracking-widest"
+                        >
+                          Needs Changes
+                        </button>
+                        <div className="text-[11px] text-amber-900/50">
+                          Reviewer: {activeAgent?.name ?? assignedAgent?.name ?? 'Unassigned'} · Requested {task.reviewRequestedAt ? new Date(task.reviewRequestedAt).toLocaleString() : '—'}
+                        </div>
+                      </div>
+                    )}
+                    {task.status !== 'in_progress' && task.status !== 'review' && (
+                      <div className="text-[11px] text-amber-900/40">
+                        Move the task to in progress to request a review.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-5 rounded-3xl bg-white/80 border border-amber-900/10 shadow-sm flex flex-col gap-4">
+                    <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Validation</div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-semibold text-amber-900/60">Command</label>
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                        <input
+                          value={validationCommand}
+                          onChange={(event) => setValidationCommand(event.target.value)}
+                          placeholder="npm test"
+                          className="flex-1 px-3 py-2 rounded-2xl border border-amber-900/10 bg-white text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        />
+                        <button
+                          onClick={() => {
+                            const trimmed = validationCommand.trim()
+                            if (!trimmed) return
+                            onRunValidation({ taskId: task.id, command: trimmed, agentId: reviewerAgentId })
+                          }}
+                          disabled={!validationCommand.trim()}
+                          className="px-4 py-2 rounded-2xl bg-amber-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-amber-500/20 disabled:opacity-40"
+                        >
+                          Run
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-amber-900/40">
+                        Runs in {activeAgent?.workspacePath || assignedAgent?.workspacePath || repo?.path || 'repo workspace'}.
+                      </div>
+                    </div>
+                    {validations.length > 0 ? (
+                      <div className="flex flex-col gap-3 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                        {validations.map((validation) => (
+                          <div
+                            key={validation.id}
+                            className={cn(
+                              "p-3 rounded-2xl border text-[11px] whitespace-pre-wrap break-words",
+                              validation.ok ? "border-emerald-200 bg-emerald-50/40 text-emerald-700" : "border-rose-200 bg-rose-50/40 text-rose-700"
+                            )}
+                          >
+                            <div className="flex items-center justify-between font-semibold text-[10px] uppercase tracking-widest mb-2">
+                              <span>{validation.ok ? 'Pass' : 'Fail'} · {validation.command}</span>
+                              <span>{new Date(validation.createdAt).toLocaleString()}</span>
+                            </div>
+                            {validation.output || 'No output captured.'}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-amber-900/40">No validations run yet.</div>
+                    )}
                   </div>
 
                   <div className="flex flex-col gap-3">

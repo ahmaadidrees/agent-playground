@@ -12,16 +12,23 @@ import {
   addOrchestratorValidationArtifact,
   addRepo,
   addTask,
+  addTaskValidationRun,
   addPlannerMessage,
   addPlannerRunEvent,
+  approveTaskReview,
+  assignTask,
+  claimTask,
+  createAgent,
   createAgentRun,
   createAgentSession,
   createOrchestratorRun,
   createOrchestratorTaskRun,
   createPlannerRun,
   createPlannerThread,
+  deleteAgent,
   deletePlannerThread,
   deleteTask,
+  getAgentById,
   getAgentSessionById,
   getDbPath,
   getRepoById,
@@ -29,6 +36,7 @@ import {
   getTaskById,
   getTaskNote,
   initDb,
+  listAgents,
   listAgentMessages,
   listAgentSessions,
   listOrchestratorRuns,
@@ -38,13 +46,18 @@ import {
   listPlannerMessages,
   listPlannerThreads,
   listRepos,
+  listTaskValidations,
   listTasks,
+  releaseTask,
+  requestTaskChanges,
+  requestTaskReview,
   updatePlannerRunStatus,
   updatePlannerThread,
   updateOrchestratorRunStatus,
   updateOrchestratorTaskRunDetails,
   updateOrchestratorTaskRunStatus,
   updateOrchestratorTaskRunValidation,
+  updateAgent,
   updateAgentRunStatus,
   updateTaskStatus,
   upsertTaskNote,
@@ -971,6 +984,129 @@ function registerIpcHandlers() {
 
   ipcMain.handle('tasks:note:save', (_event, payload: { taskId: number; content: string }) => {
     return upsertTaskNote(payload.taskId, payload.content)
+  })
+
+  ipcMain.handle('agents:list', (_event, repoId?: number) => listAgents(repoId))
+
+  ipcMain.handle('agents:create', (_event, payload: { repoId: number; name: string; provider: AgentKey; workspacePath?: string | null }) => {
+    return createAgent({
+      repoId: payload.repoId,
+      name: payload.name,
+      provider: payload.provider,
+      workspacePath: payload.workspacePath ?? null,
+    })
+  })
+
+  ipcMain.handle('agents:update', (_event, payload: {
+    agentId: number
+    name?: string
+    provider?: AgentKey
+    workspacePath?: string | null
+    status?: 'active' | 'paused'
+  }) => {
+    return updateAgent(payload.agentId, {
+      name: payload.name,
+      provider: payload.provider,
+      workspacePath: payload.workspacePath ?? null,
+      status: payload.status,
+    })
+  })
+
+  ipcMain.handle('agents:delete', (_event, agentId: number) => deleteAgent(agentId))
+
+  ipcMain.handle('tasks:assign', (_event, payload: { taskId: number; agentId: number | null }) => {
+    if (payload.agentId) {
+      const agent = getAgentById(payload.agentId)
+      if (!agent) {
+        throw new Error('Agent not found')
+      }
+      const task = getTaskById(payload.taskId)
+      if (!task) {
+        throw new Error('Task not found')
+      }
+      if (task.repoId !== agent.repoId) {
+        throw new Error('Agent does not belong to this repo')
+      }
+    }
+    return assignTask(payload.taskId, payload.agentId)
+  })
+
+  ipcMain.handle('tasks:claim', (_event, payload: { taskId: number; agentId: number }) => {
+    const agent = getAgentById(payload.agentId)
+    if (!agent) {
+      throw new Error('Agent not found')
+    }
+    const task = getTaskById(payload.taskId)
+    if (!task) {
+      throw new Error('Task not found')
+    }
+    if (task.repoId !== agent.repoId) {
+      throw new Error('Agent does not belong to this repo')
+    }
+    return claimTask(payload.taskId, payload.agentId)
+  })
+
+  ipcMain.handle('tasks:release', (_event, payload: { taskId: number }) => {
+    return releaseTask(payload.taskId)
+  })
+
+  ipcMain.handle('tasks:review:request', (_event, payload: { taskId: number }) => {
+    return requestTaskReview(payload.taskId)
+  })
+
+  ipcMain.handle('tasks:review:approve', (_event, payload: { taskId: number; reviewerAgentId?: number | null }) => {
+    if (payload.reviewerAgentId) {
+      const agent = getAgentById(payload.reviewerAgentId)
+      if (!agent) {
+        throw new Error('Agent not found')
+      }
+    }
+    return approveTaskReview(payload.taskId, payload.reviewerAgentId ?? null)
+  })
+
+  ipcMain.handle('tasks:review:changes', (_event, payload: { taskId: number }) => {
+    return requestTaskChanges(payload.taskId)
+  })
+
+  ipcMain.handle('tasks:validations:list', (_event, payload: { taskId: number }) => {
+    return listTaskValidations(payload.taskId)
+  })
+
+  ipcMain.handle('tasks:validations:run', (_event, payload: { taskId: number; command: string; agentId?: number | null }) => {
+    const task = getTaskById(payload.taskId)
+    if (!task) {
+      throw new Error('Task not found')
+    }
+    const repo = getRepoById(task.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const commandLine = payload.command.trim()
+    if (!commandLine) {
+      throw new Error('Command is required')
+    }
+    let cwd = repo.path
+    if (payload.agentId) {
+      const agent = getAgentById(payload.agentId)
+      if (!agent) {
+        throw new Error('Agent not found')
+      }
+      if (agent.repoId !== task.repoId) {
+        throw new Error('Agent does not belong to this repo')
+      }
+      if (agent.workspacePath) {
+        cwd = agent.workspacePath
+      }
+    }
+    const result = runValidationCommand(cwd, commandLine)
+    return addTaskValidationRun({
+      taskId: payload.taskId,
+      agentId: payload.agentId ?? null,
+      command: commandLine,
+      ok: result.ok,
+      output: result.output,
+      cwd,
+    })
   })
 
   ipcMain.handle('app:db:path', () => getDbPath())
