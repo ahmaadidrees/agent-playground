@@ -123,7 +123,7 @@ async function main() {
 
   if (group === 'tasks' && action === 'add') {
     const status = parseFlag('--status') ?? 'proposed'
-    const allowedStatuses = new Set(['proposed', 'backlog', 'in_progress', 'done'])
+    const allowedStatuses = new Set(['proposed', 'backlog', 'in_progress', 'blocked', 'failed', 'canceled', 'done'])
     if (!allowedStatuses.has(status)) {
       exitWithError(`Invalid status: ${status}`)
     }

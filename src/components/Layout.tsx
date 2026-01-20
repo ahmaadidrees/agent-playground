@@ -17,14 +17,14 @@ export const Layout: React.FC<LayoutProps> = ({ sidebar, children, errorMessage,
       {sidebar}
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 relative">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {topbar && (
-          <div className="px-8 pt-6">
+          <div className="px-8 pt-6 flex-shrink-0">
             {topbar}
           </div>
         )}
-        <div className="flex-1 overflow-y-auto px-8 pb-8 pt-6 custom-scrollbar relative z-0">
-          <div className="max-w-[1600px] mx-auto h-full flex flex-col gap-8">
+        <div className="flex-1 min-h-0 overflow-hidden px-8 pb-8 pt-6 custom-scrollbar relative z-0">
+          <div className="max-w-[1600px] mx-auto h-full min-h-0 flex flex-col gap-8">
             {children}
           </div>
         </div>

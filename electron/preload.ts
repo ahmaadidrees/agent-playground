@@ -5,9 +5,16 @@ contextBridge.exposeInMainWorld('api', {
   addRepo: (repoPath: string) => ipcRenderer.invoke('repos:add', repoPath),
   pickRepo: () => ipcRenderer.invoke('repos:pick'),
   listTasks: (repoId?: number) => ipcRenderer.invoke('tasks:list', repoId),
-  addTask: (payload: { repoId: number; title: string; status: 'proposed' | 'backlog' | 'in_progress' | 'done' }) =>
+  addTask: (payload: {
+    repoId: number
+    title: string
+    status: 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
+  }) =>
     ipcRenderer.invoke('tasks:add', payload),
-  moveTask: (payload: { taskId: number; status: 'proposed' | 'backlog' | 'in_progress' | 'done' }) =>
+  moveTask: (payload: {
+    taskId: number
+    status: 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
+  }) =>
     ipcRenderer.invoke('tasks:move', payload),
   deleteTask: (taskId: number) => ipcRenderer.invoke('tasks:delete', taskId),
   getTaskNote: (taskId: number) => ipcRenderer.invoke('tasks:note:get', taskId),
@@ -43,6 +50,25 @@ contextBridge.exposeInMainWorld('api', {
   sendPlannerMessage: (payload: { threadId: number; content: string }) =>
     ipcRenderer.invoke('planner:message:send', payload),
   cancelPlannerRun: (runId: string) => ipcRenderer.invoke('planner:run:cancel', runId),
+  listOrchestratorRuns: (repoId?: number) => ipcRenderer.invoke('orchestrator:runs:list', repoId),
+  listOrchestratorTasks: (runId: string) => ipcRenderer.invoke('orchestrator:tasks:list', runId),
+  listOrchestratorEvents: (runId: string) => ipcRenderer.invoke('orchestrator:events:list', runId),
+  listOrchestratorValidationArtifacts: (runId: string) => ipcRenderer.invoke('orchestrator:validation:list', runId),
+  startOrchestratorRun: (payload: {
+    repoId: number
+    concurrency?: number
+    maxAttempts?: number
+    conflictPolicy?: 'continue' | 'halt'
+    baseBranch?: string
+    model?: string | null
+    reasoningEffort?: string | null
+    sandbox?: string | null
+    approval?: string | null
+    taskIds?: number[]
+    workerValidationCommand?: string
+    integrationValidationCommand?: string
+  }) => ipcRenderer.invoke('orchestrator:runs:start', payload),
+  cancelOrchestratorRun: (runId: string) => ipcRenderer.invoke('orchestrator:runs:cancel', runId),
   runCommand: (payload: {
     runId?: string
     repoId?: number

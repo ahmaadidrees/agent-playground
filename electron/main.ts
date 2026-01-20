@@ -8,12 +8,16 @@ import path from 'node:path'
 import {
   addAgentMessage,
   addAgentRunEvent,
+  addOrchestratorRunEvent,
+  addOrchestratorValidationArtifact,
   addRepo,
   addTask,
   addPlannerMessage,
   addPlannerRunEvent,
   createAgentRun,
   createAgentSession,
+  createOrchestratorRun,
+  createOrchestratorTaskRun,
   createPlannerRun,
   createPlannerThread,
   deletePlannerThread,
@@ -27,17 +31,25 @@ import {
   initDb,
   listAgentMessages,
   listAgentSessions,
+  listOrchestratorRuns,
+  listOrchestratorRunEvents,
+  listOrchestratorTaskRuns,
+  listOrchestratorValidationArtifacts,
   listPlannerMessages,
   listPlannerThreads,
   listRepos,
   listTasks,
   updatePlannerRunStatus,
   updatePlannerThread,
+  updateOrchestratorRunStatus,
+  updateOrchestratorTaskRunDetails,
+  updateOrchestratorTaskRunStatus,
+  updateOrchestratorTaskRunValidation,
   updateAgentRunStatus,
   updateTaskStatus,
   upsertTaskNote,
 } from './db'
-import type { TaskStatus } from './db'
+import type { OrchestratorRunStatus, OrchestratorTaskRunStatus, TaskStatus } from './db'
 import * as pty from 'node-pty'
 
 const require = createRequire(import.meta.url)
@@ -73,6 +85,54 @@ let win: BrowserWindow | null
 const activeTerms = new Map<string, pty.IPty>()
 const activeAgentRuns = new Map<string, { proc: ReturnType<typeof spawn>; sessionId: number; canceled: boolean }>()
 const activePlannerRuns = new Map<string, { proc: ReturnType<typeof spawn>; threadId: number; canceled: boolean }>()
+
+type OrchestratorRunConfig = {
+  concurrency: number
+  maxAttempts: number
+  conflictPolicy: 'continue' | 'halt'
+  baseBranch?: string
+  model?: string | null
+  reasoningEffort?: string | null
+  sandbox?: string | null
+  approval?: string | null
+  taskIds?: number[]
+  workerValidationCommand?: string
+  integrationValidationCommand?: string
+}
+
+type OrchestratorTaskWork = {
+  taskRunId: string
+  taskId: number
+  title: string
+  note: string | null
+  attempt: number
+}
+
+type OrchestratorActiveTask = {
+  taskRunId: string
+  taskId: number
+  proc: ReturnType<typeof spawn>
+  worktreePath: string
+  stdout: string
+  stderr: string
+}
+
+type OrchestratorRunState = {
+  runId: string
+  repoId: number
+  repoPath: string
+  baseRef: string
+  integrationBranch: string
+  integrationPath: string
+  config: OrchestratorRunConfig
+  queue: OrchestratorTaskWork[]
+  active: Map<string, OrchestratorActiveTask>
+  failures: number
+  canceled: boolean
+  halted: boolean
+}
+
+const activeOrchestratorRuns = new Map<string, OrchestratorRunState>()
 
 ensurePtyHelperExecutable()
 
@@ -174,6 +234,51 @@ function createPlannerWorktree(repoPath: string, baseRef: string, worktreePath: 
   })
 }
 
+function createOrchestratorWorktree(repoPath: string, baseRef: string, worktreePath: string, branchName: string) {
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true })
+  execFileSync('git', ['-C', repoPath, 'worktree', 'add', '-b', branchName, worktreePath, baseRef], {
+    stdio: 'pipe',
+  })
+}
+
+function commitWorktreeChanges(worktreePath: string, message: string) {
+  execFileSync('git', ['-C', worktreePath, 'add', '-A'], { stdio: 'pipe' })
+  const status = execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], { encoding: 'utf8' }).trim()
+  if (!status) {
+    return false
+  }
+  execFileSync('git', ['-C', worktreePath, 'commit', '-m', message], {
+    stdio: 'pipe',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'agent-playground',
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'agent-playground@example.com',
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'agent-playground',
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'agent-playground@example.com',
+    },
+  })
+  return true
+}
+
+function runValidationCommand(workingDir: string, commandLine: string) {
+  try {
+    const output = execFileSync(defaultShell, ['-lc', commandLine], {
+      cwd: workingDir,
+      encoding: 'utf8',
+      env: { ...process.env },
+    })
+    return { ok: true, output: output.trim() }
+  } catch (error) {
+    if (error && typeof error === 'object' && 'stdout' in error) {
+      const stdout = String((error as { stdout?: Buffer | string }).stdout ?? '')
+      const stderr = String((error as { stderr?: Buffer | string }).stderr ?? '')
+      const combined = [stdout, stderr].filter((chunk) => chunk.trim().length > 0).join('\n')
+      return { ok: false, output: combined.trim() || 'Validation failed' }
+    }
+    return { ok: false, output: error instanceof Error ? error.message : 'Validation failed' }
+  }
+}
+
 function removePlannerWorktree(repoPath: string, worktreePath: string) {
   if (!fs.existsSync(worktreePath)) {
     return { removed: false, warning: 'Worktree already missing.' }
@@ -199,6 +304,608 @@ function removePlannerWorktree(repoPath: string, worktreePath: string) {
     // ignore pruning failures
   }
   return { removed: !fs.existsSync(worktreePath), warning }
+}
+
+function normalizeOrchestratorConfig(payload: {
+  concurrency?: number
+  maxAttempts?: number
+  conflictPolicy?: 'continue' | 'halt'
+  baseBranch?: string
+  model?: string | null
+  reasoningEffort?: string | null
+  sandbox?: string | null
+  approval?: string | null
+  taskIds?: number[]
+  workerValidationCommand?: string
+  integrationValidationCommand?: string
+}): OrchestratorRunConfig {
+  return {
+    concurrency: Math.max(1, payload.concurrency ?? 1),
+    maxAttempts: Math.max(1, payload.maxAttempts ?? 1),
+    conflictPolicy: payload.conflictPolicy === 'halt' ? 'halt' : 'continue',
+    baseBranch: payload.baseBranch?.trim() || undefined,
+    model: payload.model ?? null,
+    reasoningEffort: payload.reasoningEffort ?? null,
+    sandbox: payload.sandbox ?? null,
+    approval: payload.approval ?? null,
+    taskIds: payload.taskIds,
+    workerValidationCommand: payload.workerValidationCommand?.trim() || undefined,
+    integrationValidationCommand: payload.integrationValidationCommand?.trim() || undefined,
+  }
+}
+
+function getOrchestratorBaseRef(repoPath: string, baseBranch?: string) {
+  if (!baseBranch) {
+    return getRepoBaseRef(repoPath)
+  }
+  const ref = baseBranch.trim()
+  if (ref.startsWith('origin/')) {
+    const remoteBranch = ref.replace(/^origin\//, '')
+    execFileSync('git', ['-C', repoPath, 'fetch', 'origin', remoteBranch], { stdio: 'pipe' })
+  }
+  return ref
+}
+
+function buildOrchestratorPrompt(repoPath: string, taskTitle: string, taskNote: string | null) {
+  const transcript = formatTranscript([{ role: 'user', content: taskTitle }])
+  return buildPrompt({
+    repoPath,
+    taskTitle,
+    taskNote: taskNote ?? undefined,
+    transcript,
+  })
+}
+
+function addOrchestratorOutput(runId: string, taskRunId: string, taskId: number, kind: string, text: string) {
+  addOrchestratorRunEvent(runId, kind, JSON.stringify({ taskRunId, taskId, text }))
+}
+
+function scheduleOrchestratorRun(state: OrchestratorRunState) {
+  if (state.canceled || state.halted) {
+    if (state.active.size === 0) {
+      finalizeOrchestratorRun(state)
+    }
+    return
+  }
+  while (state.active.size < state.config.concurrency && state.queue.length > 0) {
+    const next = state.queue.shift()
+    if (next) {
+      startOrchestratorTask(state, next)
+    }
+  }
+  if (state.active.size === 0 && state.queue.length === 0) {
+    finalizeOrchestratorRun(state)
+  }
+}
+
+function finalizeOrchestratorRun(state: OrchestratorRunState) {
+  const status: OrchestratorRunStatus = state.canceled ? 'canceled' : state.failures > 0 ? 'failed' : 'succeeded'
+  updateOrchestratorRunStatus(state.runId, status)
+  addOrchestratorRunEvent(state.runId, 'run:complete', JSON.stringify({ status, failures: state.failures }))
+  cleanupOrchestratorRunArtifacts(state)
+  activeOrchestratorRuns.delete(state.runId)
+}
+
+function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTaskWork) {
+  const worktreeRoot = path.join(app.getPath('userData'), 'orchestrator-worktrees', `repo-${state.repoId}`, `run-${state.runId}`)
+  const worktreePath = path.join(worktreeRoot, `task-${work.taskId}-${work.taskRunId}`)
+  const branchName = `orchestrator/task-${work.taskId}-${work.taskRunId.slice(0, 8)}`
+
+  try {
+    createOrchestratorWorktree(state.repoPath, state.baseRef, worktreePath, branchName)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create worktree'
+    if (work.attempt < state.config.maxAttempts) {
+      const nextAttempt = work.attempt + 1
+      updateOrchestratorTaskRunDetails(work.taskRunId, { error: message, branchName, attempt: nextAttempt })
+      updateOrchestratorTaskRunValidation(work.taskRunId, 'pending')
+      updateOrchestratorTaskRunStatus(work.taskRunId, 'queued')
+      state.queue.push({ ...work, attempt: nextAttempt })
+      addOrchestratorRunEvent(
+        state.runId,
+        'task:retry',
+        JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, attempt: nextAttempt, reason: message })
+      )
+    } else {
+      updateOrchestratorTaskRunDetails(work.taskRunId, { error: message, branchName })
+      updateOrchestratorTaskRunStatus(work.taskRunId, 'failed')
+      updateTaskStatus(work.taskId, 'failed')
+      addOrchestratorRunEvent(state.runId, 'task:error', JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, message }))
+      state.failures += 1
+    }
+    queueMicrotask(() => scheduleOrchestratorRun(state))
+    return
+  }
+
+  updateOrchestratorTaskRunDetails(work.taskRunId, { worktreePath, branchName })
+  updateOrchestratorTaskRunStatus(work.taskRunId, 'running')
+  addOrchestratorRunEvent(
+    state.runId,
+    'task:start',
+    JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, worktreePath, branchName })
+  )
+
+  const prompt = buildOrchestratorPrompt(worktreePath, work.title, work.note)
+  const args: string[] = ['exec', '--color', 'never']
+  if (state.config.model) {
+    args.push('-m', state.config.model)
+  }
+  if (state.config.reasoningEffort) {
+    args.push('-c', `model_reasoning_effort="${state.config.reasoningEffort}"`)
+  }
+  if (state.config.sandbox) {
+    args.push('-s', state.config.sandbox)
+  }
+  if (state.config.approval) {
+    args.push('-c', `approval_policy="${state.config.approval}"`)
+  }
+  args.push('-')
+
+  const child = spawn('codex', args, {
+    cwd: worktreePath,
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+      AGENT_PLAYGROUND_DB_PATH: getDbPath(),
+      AGENT_PLAYGROUND_REPO_ID: String(state.repoId),
+      AGENT_PLAYGROUND_REPO_PATH: worktreePath,
+      AGENT_PLAYGROUND_REPO_NAME: path.basename(state.repoPath),
+      AGENT_PLAYGROUND_PLAN_DIR: 'docs/plans',
+    },
+  })
+
+  const activeTask: OrchestratorActiveTask = {
+    taskRunId: work.taskRunId,
+    taskId: work.taskId,
+    proc: child,
+    worktreePath,
+    stdout: '',
+    stderr: '',
+  }
+  state.active.set(work.taskRunId, activeTask)
+
+  const enqueueRetry = (reason: string, finalTaskStatus: TaskStatus) => {
+    if (work.attempt < state.config.maxAttempts && !state.canceled) {
+      const nextAttempt = work.attempt + 1
+      updateOrchestratorTaskRunDetails(work.taskRunId, { error: reason, attempt: nextAttempt })
+      updateOrchestratorTaskRunValidation(work.taskRunId, 'pending')
+      updateOrchestratorTaskRunStatus(work.taskRunId, 'queued')
+      state.queue.push({ ...work, attempt: nextAttempt })
+      addOrchestratorRunEvent(
+        state.runId,
+        'task:retry',
+        JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, attempt: nextAttempt, reason })
+      )
+      return true
+    }
+    updateTaskStatus(work.taskId, finalTaskStatus)
+    state.failures += 1
+    return false
+  }
+
+  child.stdin.write(prompt)
+  child.stdin.end()
+
+  child.stdout.on('data', (data) => {
+    const text = data.toString()
+    activeTask.stdout += text
+    addOrchestratorOutput(state.runId, work.taskRunId, work.taskId, 'task:stdout', text)
+  })
+  child.stderr.on('data', (data) => {
+    const text = data.toString()
+    activeTask.stderr += text
+    addOrchestratorOutput(state.runId, work.taskRunId, work.taskId, 'task:stderr', text)
+  })
+  child.on('error', (error) => {
+    const message = error instanceof Error ? error.message : 'Worker process error'
+    activeTask.stderr += message
+    addOrchestratorOutput(state.runId, work.taskRunId, work.taskId, 'task:error', message)
+  })
+  child.on('close', (code) => {
+    const canceled = state.canceled
+    const hasValidation = Boolean(state.config.workerValidationCommand || state.config.integrationValidationCommand)
+    let status: OrchestratorTaskRunStatus = 'failed'
+    let shouldLogComplete = true
+    if (!hasValidation) {
+      updateOrchestratorTaskRunValidation(work.taskRunId, 'skipped')
+    }
+    if (canceled) {
+      status = 'canceled'
+      updateTaskStatus(work.taskId, 'canceled')
+    } else if (code === 0) {
+      if (hasValidation) {
+        updateOrchestratorTaskRunValidation(work.taskRunId, 'running')
+      }
+      if (state.config.workerValidationCommand) {
+        const result = runValidationCommand(worktreePath, state.config.workerValidationCommand)
+        addOrchestratorValidationArtifact({
+          runId: state.runId,
+          taskRunId: work.taskRunId,
+          scope: 'worker',
+          command: state.config.workerValidationCommand,
+          ok: result.ok,
+          output: result.output,
+        })
+        addOrchestratorRunEvent(
+          state.runId,
+          'task:validation',
+          JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, ok: result.ok, output: result.output })
+        )
+        if (!result.ok) {
+          updateOrchestratorTaskRunValidation(work.taskRunId, 'failed')
+          const message = result.output || 'Worker validation failed'
+          updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
+          const retried = enqueueRetry(message, 'failed')
+          if (retried) {
+            status = 'queued'
+            shouldLogComplete = false
+          } else {
+            status = 'failed'
+          }
+        }
+      }
+
+      if (status !== 'failed' && status !== 'queued') {
+        const committed = commitWorktreeChanges(worktreePath, `Task ${work.taskId}`)
+        if (!committed) {
+          addOrchestratorRunEvent(
+            state.runId,
+            'task:noop',
+            JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, branchName })
+          )
+        }
+        try {
+          let preMergeSha = ''
+          if (committed) {
+            preMergeSha = execFileSync('git', ['-C', state.integrationPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+            execFileSync('git', ['-C', state.integrationPath, 'merge', '--no-ff', branchName], { stdio: 'pipe' })
+            addOrchestratorRunEvent(
+              state.runId,
+              'task:merge',
+              JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, branchName })
+            )
+          }
+
+          if (committed && state.config.integrationValidationCommand) {
+            const result = runValidationCommand(state.integrationPath, state.config.integrationValidationCommand)
+            addOrchestratorValidationArtifact({
+              runId: state.runId,
+              taskRunId: work.taskRunId,
+              scope: 'integration',
+              command: state.config.integrationValidationCommand,
+              ok: result.ok,
+              output: result.output,
+            })
+            addOrchestratorRunEvent(
+              state.runId,
+              'integration:validation',
+              JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, ok: result.ok, output: result.output })
+            )
+            if (!result.ok) {
+              updateOrchestratorTaskRunValidation(work.taskRunId, 'failed')
+              const message = result.output || 'Integration validation failed'
+              updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
+              const retried = enqueueRetry(message, 'blocked')
+              if (retried) {
+                status = 'queued'
+                shouldLogComplete = false
+              } else {
+                status = 'blocked'
+              }
+              try {
+                if (preMergeSha) {
+                  execFileSync('git', ['-C', state.integrationPath, 'reset', '--hard', preMergeSha], { stdio: 'pipe' })
+                }
+              } catch {
+                // ignore rollback failures
+              }
+              addOrchestratorRunEvent(
+                state.runId,
+                'integration:validation_failed',
+                JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, branchName, message })
+              )
+            }
+          }
+
+          if (status !== 'blocked' && status !== 'queued') {
+            if (hasValidation) {
+              updateOrchestratorTaskRunValidation(work.taskRunId, 'succeeded')
+            }
+            status = 'succeeded'
+            updateTaskStatus(work.taskId, 'done')
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to merge task branch'
+          try {
+            execFileSync('git', ['-C', state.integrationPath, 'merge', '--abort'], { stdio: 'pipe' })
+          } catch {
+            // ignore abort failures
+          }
+          updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
+          const retried = enqueueRetry(message, 'blocked')
+          if (retried) {
+            status = 'queued'
+            shouldLogComplete = false
+          } else {
+            status = 'blocked'
+            if (state.config.conflictPolicy === 'halt') {
+              haltOrchestratorRun(state, 'merge_conflict')
+            }
+          }
+          addOrchestratorRunEvent(
+            state.runId,
+            'task:merge_failed',
+            JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, branchName, message })
+          )
+        }
+      }
+    } else {
+      const errorText = activeTask.stderr.trim() || activeTask.stdout.trim() || 'Worker failed'
+      updateOrchestratorTaskRunDetails(work.taskRunId, { error: errorText })
+      const retried = enqueueRetry(errorText, 'failed')
+      if (retried) {
+        status = 'queued'
+        shouldLogComplete = false
+      } else {
+        status = 'failed'
+      }
+    }
+
+    if (shouldLogComplete) {
+      updateOrchestratorTaskRunStatus(work.taskRunId, status)
+      addOrchestratorRunEvent(state.runId, 'task:complete', JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, status }))
+    }
+    state.active.delete(work.taskRunId)
+    queueMicrotask(() => scheduleOrchestratorRun(state))
+  })
+}
+
+function startOrchestratorRun(payload: {
+  repoId: number
+  concurrency?: number
+  maxAttempts?: number
+  conflictPolicy?: 'continue' | 'halt'
+  baseBranch?: string
+  model?: string | null
+  reasoningEffort?: string | null
+  sandbox?: string | null
+  approval?: string | null
+  taskIds?: number[]
+  workerValidationCommand?: string
+  integrationValidationCommand?: string
+}) {
+  const repo = getRepoById(payload.repoId)
+  if (!repo) {
+    throw new Error('Repo not found')
+  }
+
+  const config = normalizeOrchestratorConfig(payload)
+  const runId = randomUUID()
+  let baseRef = ''
+  let integrationBranch = ''
+  let integrationPath = ''
+  createOrchestratorRun({
+    id: runId,
+    repoId: repo.id,
+    status: 'running',
+    config,
+  })
+  addOrchestratorRunEvent(runId, 'run:start', JSON.stringify({ config }))
+
+  try {
+    baseRef = getOrchestratorBaseRef(repo.path, config.baseBranch)
+    integrationBranch = `orchestrator/run-${runId}`
+    integrationPath = path.join(
+      app.getPath('userData'),
+      'orchestrator-worktrees',
+      `repo-${repo.id}`,
+      `run-${runId}`,
+      'integration'
+    )
+    createOrchestratorWorktree(repo.path, baseRef, integrationPath, integrationBranch)
+    addOrchestratorRunEvent(
+      runId,
+      'integration:ready',
+      JSON.stringify({ branch: integrationBranch, path: integrationPath, baseRef })
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create integration worktree'
+    updateOrchestratorRunStatus(runId, 'failed')
+    addOrchestratorRunEvent(runId, 'integration:error', JSON.stringify({ message }))
+    throw error
+  }
+
+  const candidateTasks = config.taskIds?.length
+    ? config.taskIds
+        .map((taskId) => getTaskById(taskId))
+        .filter((task): task is NonNullable<typeof task> => Boolean(task))
+        .filter((task) => task.repoId === repo.id)
+    : listTasks(repo.id)
+
+  const eligibleTasks = candidateTasks.filter((task) => task.status === 'backlog')
+  const skippedTasks = candidateTasks.filter((task) => task.status !== 'backlog')
+  if (skippedTasks.length > 0) {
+    addOrchestratorRunEvent(
+      runId,
+      'task:skip',
+      JSON.stringify({ taskIds: skippedTasks.map((task) => task.id), reason: 'status_not_backlog' })
+    )
+  }
+
+  if (eligibleTasks.length === 0) {
+    updateOrchestratorRunStatus(runId, 'succeeded')
+    addOrchestratorRunEvent(runId, 'run:empty', JSON.stringify({ reason: 'no_backlog_tasks' }))
+    return { runId }
+  }
+
+  const orderedTasks = eligibleTasks.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const queue: OrchestratorTaskWork[] = orderedTasks.map((task) => {
+    const note = getTaskNote(task.id)?.content ?? null
+    updateTaskStatus(task.id, 'in_progress')
+    const taskRunId = randomUUID()
+    createOrchestratorTaskRun({
+      id: taskRunId,
+      runId,
+      taskId: task.id,
+      status: 'queued',
+      attempt: 1,
+    })
+    return {
+      taskRunId,
+      taskId: task.id,
+      title: task.title,
+      note,
+      attempt: 1,
+    }
+  })
+
+  const state: OrchestratorRunState = {
+    runId,
+    repoId: repo.id,
+    repoPath: repo.path,
+    baseRef,
+    integrationBranch,
+    integrationPath,
+    config,
+    queue,
+    active: new Map(),
+    failures: 0,
+    canceled: false,
+    halted: false,
+  }
+  activeOrchestratorRuns.set(runId, state)
+  queueMicrotask(() => scheduleOrchestratorRun(state))
+
+  return { runId }
+}
+
+function cancelOrchestratorRun(runId: string) {
+  const state = activeOrchestratorRuns.get(runId)
+  if (!state) {
+    throw new Error('Orchestrator run not found')
+  }
+  state.canceled = true
+  updateOrchestratorRunStatus(runId, 'canceled')
+  addOrchestratorRunEvent(runId, 'run:cancel', JSON.stringify({ runId }))
+
+  for (const queued of state.queue) {
+    updateOrchestratorTaskRunStatus(queued.taskRunId, 'canceled')
+    updateTaskStatus(queued.taskId, 'canceled')
+  }
+  state.queue = []
+
+  for (const task of state.active.values()) {
+    task.proc.kill('SIGTERM')
+  }
+
+  if (state.active.size === 0) {
+    finalizeOrchestratorRun(state)
+  }
+}
+
+function haltOrchestratorRun(state: OrchestratorRunState, reason: string) {
+  if (state.halted) return
+  state.halted = true
+  addOrchestratorRunEvent(state.runId, 'run:halted', JSON.stringify({ reason }))
+  for (const queued of state.queue) {
+    updateOrchestratorTaskRunStatus(queued.taskRunId, 'canceled')
+    updateTaskStatus(queued.taskId, 'backlog')
+  }
+  state.queue = []
+}
+
+function cleanupOrchestratorRunArtifacts(state: OrchestratorRunState) {
+  const taskRuns = listOrchestratorTaskRuns(state.runId)
+  for (const taskRun of taskRuns) {
+    if (taskRun.worktreePath) {
+      try {
+        removePlannerWorktree(state.repoPath, taskRun.worktreePath)
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+    if (taskRun.branchName) {
+      try {
+        execFileSync('git', ['-C', state.repoPath, 'branch', '-D', taskRun.branchName], { stdio: 'pipe' })
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+  }
+
+  if (state.integrationPath) {
+    try {
+      removePlannerWorktree(state.repoPath, state.integrationPath)
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+  if (state.integrationBranch) {
+    try {
+      execFileSync('git', ['-C', state.repoPath, 'branch', '-D', state.integrationBranch], { stdio: 'pipe' })
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
+
+function cleanupOrchestratorOrphans() {
+  const runs = listOrchestratorRuns()
+  const terminalRuns = runs.filter((run) => run.status !== 'running')
+  for (const run of terminalRuns) {
+    const repo = getRepoById(run.repoId)
+    if (!repo) continue
+    const taskRuns = listOrchestratorTaskRuns(run.id)
+    const integrationPath = path.join(
+      app.getPath('userData'),
+      'orchestrator-worktrees',
+      `repo-${run.repoId}`,
+      `run-${run.id}`,
+      'integration'
+    )
+    const state: OrchestratorRunState = {
+      runId: run.id,
+      repoId: run.repoId,
+      repoPath: repo.path,
+      baseRef: '',
+      integrationBranch: `orchestrator/run-${run.id}`,
+      integrationPath,
+      config: {
+        concurrency: 1,
+        maxAttempts: 1,
+        conflictPolicy: 'continue',
+      },
+      queue: [],
+      active: new Map(),
+      failures: 0,
+      canceled: run.status === 'canceled',
+      halted: false,
+    }
+    if (taskRuns.length > 0 || fs.existsSync(integrationPath)) {
+      cleanupOrchestratorRunArtifacts(state)
+    }
+  }
+}
+
+function recoverOrchestratorRuns() {
+  const runs = listOrchestratorRuns()
+  const activeRuns = runs.filter((run) => run.status === 'running')
+  if (activeRuns.length === 0) return
+
+  for (const run of activeRuns) {
+    updateOrchestratorRunStatus(run.id, 'failed')
+    addOrchestratorRunEvent(run.id, 'run:recovered', JSON.stringify({ reason: 'app_restart' }))
+    const taskRuns = listOrchestratorTaskRuns(run.id)
+    for (const taskRun of taskRuns) {
+      if (taskRun.status === 'running' || taskRun.status === 'queued') {
+        updateOrchestratorTaskRunStatus(taskRun.id, 'canceled')
+        const task = getTaskById(taskRun.taskId)
+        if (task && task.status === 'in_progress') {
+          updateTaskStatus(task.id, 'canceled')
+        }
+      }
+    }
+  }
 }
 
 function createWindow() {
@@ -560,6 +1267,31 @@ function registerIpcHandlers() {
     entry.proc.kill('SIGTERM')
   })
 
+  ipcMain.handle('orchestrator:runs:list', (_event, repoId?: number) => listOrchestratorRuns(repoId))
+
+  ipcMain.handle('orchestrator:tasks:list', (_event, runId: string) => listOrchestratorTaskRuns(runId))
+
+  ipcMain.handle('orchestrator:events:list', (_event, runId: string) => listOrchestratorRunEvents(runId))
+
+  ipcMain.handle('orchestrator:validation:list', (_event, runId: string) => listOrchestratorValidationArtifacts(runId))
+
+  ipcMain.handle('orchestrator:runs:start', (_event, payload: {
+    repoId: number
+    concurrency?: number
+    maxAttempts?: number
+    conflictPolicy?: 'continue' | 'halt'
+    baseBranch?: string
+    model?: string | null
+    reasoningEffort?: string | null
+    sandbox?: string | null
+    approval?: string | null
+    taskIds?: number[]
+    workerValidationCommand?: string
+    integrationValidationCommand?: string
+  }) => startOrchestratorRun(payload))
+
+  ipcMain.handle('orchestrator:runs:cancel', (_event, runId: string) => cancelOrchestratorRun(runId))
+
   ipcMain.handle('repos:pick', async () => {
     if (!win) return { canceled: true }
     const result = await dialog.showOpenDialog(win, {
@@ -666,6 +1398,8 @@ app.on('activate', () => {
 
 app.whenReady().then(() => {
   initDb()
+  recoverOrchestratorRuns()
+  cleanupOrchestratorOrphans()
   createWindow()
   registerIpcHandlers()
 })

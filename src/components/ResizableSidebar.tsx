@@ -8,6 +8,7 @@ interface ResizableSidebarProps {
   maxWidth?: number
   storageKey?: string
   className?: string
+  hideDivider?: boolean
 }
 
 export const ResizableSidebar: React.FC<ResizableSidebarProps> = ({
@@ -17,6 +18,7 @@ export const ResizableSidebar: React.FC<ResizableSidebarProps> = ({
   maxWidth = 760,
   storageKey = 'plannerSidebarWidth',
   className,
+  hideDivider = false,
 }) => {
   const [width, setWidth] = React.useState(() => {
     if (typeof window === 'undefined') return initialWidth
@@ -106,7 +108,10 @@ export const ResizableSidebar: React.FC<ResizableSidebarProps> = ({
         aria-valuemin={minWidth}
         aria-valuemax={maxWidth}
         onPointerDown={startDrag}
-        className="absolute right-0 top-0 h-full w-2 cursor-col-resize z-20"
+        className={cn(
+          "absolute right-0 top-0 h-full w-2 cursor-col-resize z-20 transition-opacity",
+          hideDivider ? "opacity-0 pointer-events-none" : "opacity-100"
+        )}
       >
         <div className="h-full w-px bg-amber-900/10 mx-auto" />
       </div>

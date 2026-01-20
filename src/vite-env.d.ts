@@ -7,7 +7,7 @@ type Repo = {
   createdAt: string
 }
 
-type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'done'
+type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
 
 type Task = {
   id: number
@@ -62,6 +62,56 @@ type PlannerMessage = {
   createdAt: string
 }
 
+type OrchestratorRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+
+type OrchestratorTaskRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'blocked'
+
+type OrchestratorTaskValidationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+
+type OrchestratorRun = {
+  id: string
+  repoId: number
+  status: OrchestratorRunStatus
+  config: Record<string, unknown>
+  createdAt: string
+  startedAt: string | null
+  endedAt: string | null
+}
+
+type OrchestratorTaskRun = {
+  id: string
+  runId: string
+  taskId: number
+  plannerThreadId: number | null
+  status: OrchestratorTaskRunStatus
+  validationStatus: OrchestratorTaskValidationStatus
+  worktreePath: string | null
+  branchName: string | null
+  attempt: number
+  startedAt: string | null
+  endedAt: string | null
+  error: string | null
+}
+
+type OrchestratorRunEvent = {
+  id: number
+  runId: string
+  kind: string
+  payload: string
+  createdAt: string
+}
+
+type OrchestratorValidationArtifact = {
+  id: number
+  runId: string
+  taskRunId: string
+  scope: 'worker' | 'integration'
+  command: string
+  ok: boolean
+  output: string
+  createdAt: string
+}
+
 type CommandOutput = {
   runId: string
   kind: 'stdout' | 'stderr' | 'exit' | 'error'
@@ -108,6 +158,25 @@ interface Window {
     listPlannerMessages: (threadId: number) => Promise<PlannerMessage[]>
     sendPlannerMessage: (payload: { threadId: number; content: string }) => Promise<{ runId: string }>
     cancelPlannerRun: (runId: string) => Promise<void>
+    listOrchestratorRuns: (repoId?: number) => Promise<OrchestratorRun[]>
+    listOrchestratorTasks: (runId: string) => Promise<OrchestratorTaskRun[]>
+    listOrchestratorEvents: (runId: string) => Promise<OrchestratorRunEvent[]>
+    listOrchestratorValidationArtifacts: (runId: string) => Promise<OrchestratorValidationArtifact[]>
+    startOrchestratorRun: (payload: {
+      repoId: number
+      concurrency?: number
+      maxAttempts?: number
+      conflictPolicy?: 'continue' | 'halt'
+      baseBranch?: string
+      model?: string | null
+      reasoningEffort?: string | null
+      sandbox?: string | null
+      approval?: string | null
+      taskIds?: number[]
+      workerValidationCommand?: string
+      integrationValidationCommand?: string
+    }) => Promise<{ runId: string }>
+    cancelOrchestratorRun: (runId: string) => Promise<void>
     runCommand: (payload: {
       runId?: string
       repoId?: number

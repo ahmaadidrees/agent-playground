@@ -4,7 +4,7 @@ export interface Repo {
   path: string
 }
 
-export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'done'
+export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
 
 export interface Task {
   id: number
@@ -55,5 +55,55 @@ export interface PlannerMessage {
   threadId: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  createdAt: string
+}
+
+export type OrchestratorRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+
+export type OrchestratorTaskRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'blocked'
+
+export type OrchestratorTaskValidationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+
+export interface OrchestratorRun {
+  id: string
+  repoId: number
+  status: OrchestratorRunStatus
+  config: Record<string, unknown>
+  createdAt: string
+  startedAt: string | null
+  endedAt: string | null
+}
+
+export interface OrchestratorTaskRun {
+  id: string
+  runId: string
+  taskId: number
+  plannerThreadId: number | null
+  status: OrchestratorTaskRunStatus
+  validationStatus: OrchestratorTaskValidationStatus
+  worktreePath: string | null
+  branchName: string | null
+  attempt: number
+  startedAt: string | null
+  endedAt: string | null
+  error: string | null
+}
+
+export interface OrchestratorRunEvent {
+  id: number
+  runId: string
+  kind: string
+  payload: string
+  createdAt: string
+}
+
+export interface OrchestratorValidationArtifact {
+  id: number
+  runId: string
+  taskRunId: string
+  scope: 'worker' | 'integration'
+  command: string
+  ok: boolean
+  output: string
   createdAt: string
 }

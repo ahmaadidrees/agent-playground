@@ -9,7 +9,7 @@ export type Repo = {
   createdAt: string
 }
 
-export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'done'
+export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'blocked' | 'failed' | 'canceled' | 'done'
 
 export type Task = {
   id: number
@@ -82,6 +82,56 @@ export type PlannerRun = {
   cwd: string
   startedAt: string
   endedAt: string | null
+}
+
+export type OrchestratorRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+
+export type OrchestratorRun = {
+  id: string
+  repoId: number
+  status: OrchestratorRunStatus
+  config: Record<string, unknown>
+  createdAt: string
+  startedAt: string | null
+  endedAt: string | null
+}
+
+export type OrchestratorTaskRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'blocked'
+
+export type OrchestratorTaskValidationStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+
+export type OrchestratorTaskRun = {
+  id: string
+  runId: string
+  taskId: number
+  plannerThreadId: number | null
+  status: OrchestratorTaskRunStatus
+  validationStatus: OrchestratorTaskValidationStatus
+  worktreePath: string | null
+  branchName: string | null
+  attempt: number
+  startedAt: string | null
+  endedAt: string | null
+  error: string | null
+}
+
+export type OrchestratorRunEvent = {
+  id: number
+  runId: string
+  kind: string
+  payload: string
+  createdAt: string
+}
+
+export type OrchestratorValidationArtifact = {
+  id: number
+  runId: string
+  taskRunId: string
+  scope: 'worker' | 'integration'
+  command: string
+  ok: boolean
+  output: string
+  createdAt: string
 }
 
 type RepoRow = {
@@ -162,6 +212,50 @@ type PlannerRunRow = {
   cwd: string
   started_at: string
   ended_at: string | null
+}
+
+type OrchestratorRunRow = {
+  id: string
+  repo_id: number
+  status: OrchestratorRunStatus
+  config: string
+  created_at: string
+  started_at: string | null
+  ended_at: string | null
+}
+
+type OrchestratorTaskRunRow = {
+  id: string
+  run_id: string
+  task_id: number
+  planner_thread_id: number | null
+  status: OrchestratorTaskRunStatus
+  validation_status: OrchestratorTaskValidationStatus
+  worktree_path: string | null
+  branch_name: string | null
+  attempt: number
+  started_at: string | null
+  ended_at: string | null
+  error: string | null
+}
+
+type OrchestratorRunEventRow = {
+  id: number
+  run_id: string
+  kind: string
+  payload: string
+  created_at: string
+}
+
+type OrchestratorValidationArtifactRow = {
+  id: number
+  run_id: string
+  task_run_id: string
+  scope: 'worker' | 'integration'
+  command: string
+  ok: number
+  output: string
+  created_at: string
 }
 
 let db: Database.Database | null = null
@@ -281,6 +375,59 @@ export function initDb() {
       FOREIGN KEY (run_id) REFERENCES planner_runs(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_planner_run_events_run ON planner_run_events(run_id);
+    CREATE TABLE IF NOT EXISTS orchestrator_runs (
+      id TEXT PRIMARY KEY,
+      repo_id INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      config TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at TEXT,
+      ended_at TEXT,
+      FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_runs_repo ON orchestrator_runs(repo_id, created_at);
+    CREATE TABLE IF NOT EXISTS orchestrator_run_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (run_id) REFERENCES orchestrator_runs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_run_events_run ON orchestrator_run_events(run_id);
+    CREATE TABLE IF NOT EXISTS orchestrator_task_runs (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_id INTEGER NOT NULL,
+      planner_thread_id INTEGER,
+      status TEXT NOT NULL,
+      validation_status TEXT NOT NULL DEFAULT 'pending',
+      worktree_path TEXT,
+      branch_name TEXT,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      started_at TEXT,
+      ended_at TEXT,
+      error TEXT,
+      FOREIGN KEY (run_id) REFERENCES orchestrator_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (planner_thread_id) REFERENCES planner_threads(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_task_runs_run ON orchestrator_task_runs(run_id);
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_task_runs_task ON orchestrator_task_runs(task_id);
+    CREATE TABLE IF NOT EXISTS orchestrator_validation_artifacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      task_run_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      command TEXT NOT NULL,
+      ok INTEGER NOT NULL,
+      output TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (run_id) REFERENCES orchestrator_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (task_run_id) REFERENCES orchestrator_task_runs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_validation_run ON orchestrator_validation_artifacts(run_id);
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_validation_task_run ON orchestrator_validation_artifacts(task_run_id);
   `)
 }
 
@@ -386,6 +533,68 @@ function mapPlannerRun(row: PlannerRunRow): PlannerRun {
     cwd: row.cwd,
     startedAt: row.started_at,
     endedAt: row.ended_at,
+  }
+}
+
+function safeParseJson(value: string): Record<string, unknown> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function mapOrchestratorRun(row: OrchestratorRunRow): OrchestratorRun {
+  return {
+    id: row.id,
+    repoId: row.repo_id,
+    status: row.status,
+    config: safeParseJson(row.config),
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+  }
+}
+
+function mapOrchestratorTaskRun(row: OrchestratorTaskRunRow): OrchestratorTaskRun {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskId: row.task_id,
+    plannerThreadId: row.planner_thread_id,
+    status: row.status,
+    validationStatus: row.validation_status,
+    worktreePath: row.worktree_path,
+    branchName: row.branch_name,
+    attempt: row.attempt,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    error: row.error,
+  }
+}
+
+function mapOrchestratorRunEvent(row: OrchestratorRunEventRow): OrchestratorRunEvent {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    kind: row.kind,
+    payload: row.payload,
+    createdAt: row.created_at,
+  }
+}
+
+function mapOrchestratorValidationArtifact(row: OrchestratorValidationArtifactRow): OrchestratorValidationArtifact {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskRunId: row.task_run_id,
+    scope: row.scope,
+    command: row.command,
+    ok: Boolean(row.ok),
+    output: row.output,
+    createdAt: row.created_at,
   }
 }
 
@@ -782,4 +991,275 @@ export function addPlannerRunEvent(runId: string, kind: string, payload: string)
   getDb()
     .prepare('INSERT INTO planner_run_events (run_id, kind, payload) VALUES (?, ?, ?)')
     .run(runId, kind, payload)
+}
+
+function isTerminalOrchestratorRunStatus(status: OrchestratorRunStatus) {
+  return status === 'succeeded' || status === 'failed' || status === 'canceled'
+}
+
+function isTerminalOrchestratorTaskStatus(status: OrchestratorTaskRunStatus) {
+  return status === 'succeeded' || status === 'failed' || status === 'canceled' || status === 'blocked'
+}
+
+export function listOrchestratorRuns(repoId?: number): OrchestratorRun[] {
+  if (repoId) {
+    const rows = getDb()
+      .prepare<OrchestratorRunRow>(
+        'SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE repo_id = ? ORDER BY created_at DESC'
+      )
+      .all(repoId)
+    return rows.map(mapOrchestratorRun)
+  }
+  const rows = getDb()
+    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs ORDER BY created_at DESC')
+    .all()
+  return rows.map(mapOrchestratorRun)
+}
+
+export function getOrchestratorRunById(runId: string): OrchestratorRun | null {
+  const row = getDb()
+    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .get(runId)
+  return row ? mapOrchestratorRun(row) : null
+}
+
+export function createOrchestratorRun(run: {
+  id: string
+  repoId: number
+  status: OrchestratorRunStatus
+  config?: Record<string, unknown>
+}): OrchestratorRun {
+  const config = JSON.stringify(run.config ?? {})
+  getDb()
+    .prepare('INSERT INTO orchestrator_runs (id, repo_id, status, config) VALUES (?, ?, ?, ?)')
+    .run(run.id, run.repoId, run.status, config)
+  const row = getDb()
+    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .get(run.id)
+  if (!row) {
+    throw new Error('Failed to load orchestrator run')
+  }
+  return mapOrchestratorRun(row)
+}
+
+export function updateOrchestratorRunStatus(runId: string, status: OrchestratorRunStatus): OrchestratorRun {
+  if (status === 'running') {
+    getDb()
+      .prepare('UPDATE orchestrator_runs SET status = ?, started_at = COALESCE(started_at, datetime(\'now\')) WHERE id = ?')
+      .run(status, runId)
+  } else if (isTerminalOrchestratorRunStatus(status)) {
+    getDb()
+      .prepare('UPDATE orchestrator_runs SET status = ?, ended_at = datetime(\'now\') WHERE id = ?')
+      .run(status, runId)
+  } else {
+    getDb()
+      .prepare('UPDATE orchestrator_runs SET status = ? WHERE id = ?')
+      .run(status, runId)
+  }
+  const row = getDb()
+    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .get(runId)
+  if (!row) {
+    throw new Error('Failed to load orchestrator run')
+  }
+  return mapOrchestratorRun(row)
+}
+
+export function addOrchestratorRunEvent(runId: string, kind: string, payload: string) {
+  getDb()
+    .prepare('INSERT INTO orchestrator_run_events (run_id, kind, payload) VALUES (?, ?, ?)')
+    .run(runId, kind, payload)
+}
+
+export function listOrchestratorRunEvents(runId: string): OrchestratorRunEvent[] {
+  const rows = getDb()
+    .prepare<OrchestratorRunEventRow>(
+      'SELECT id, run_id, kind, payload, created_at FROM orchestrator_run_events WHERE run_id = ? ORDER BY created_at ASC, id ASC'
+    )
+    .all(runId)
+  return rows.map(mapOrchestratorRunEvent)
+}
+
+export function addOrchestratorValidationArtifact(payload: {
+  runId: string
+  taskRunId: string
+  scope: OrchestratorValidationArtifact['scope']
+  command: string
+  ok: boolean
+  output: string
+}): OrchestratorValidationArtifact {
+  const info = getDb()
+    .prepare(
+      'INSERT INTO orchestrator_validation_artifacts (run_id, task_run_id, scope, command, ok, output) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    .run(payload.runId, payload.taskRunId, payload.scope, payload.command, payload.ok ? 1 : 0, payload.output)
+  const row = getDb()
+    .prepare<OrchestratorValidationArtifactRow>(
+      'SELECT id, run_id, task_run_id, scope, command, ok, output, created_at FROM orchestrator_validation_artifacts WHERE id = ?'
+    )
+    .get(info.lastInsertRowid)
+  if (!row) {
+    throw new Error('Failed to load validation artifact')
+  }
+  return mapOrchestratorValidationArtifact(row)
+}
+
+export function listOrchestratorValidationArtifacts(runId: string): OrchestratorValidationArtifact[] {
+  const rows = getDb()
+    .prepare<OrchestratorValidationArtifactRow>(
+      'SELECT id, run_id, task_run_id, scope, command, ok, output, created_at FROM orchestrator_validation_artifacts WHERE run_id = ? ORDER BY created_at DESC, id DESC'
+    )
+    .all(runId)
+  return rows.map(mapOrchestratorValidationArtifact)
+}
+
+export function listOrchestratorTaskRuns(runId: string): OrchestratorTaskRun[] {
+  const rows = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE run_id = ? ORDER BY started_at ASC'
+    )
+    .all(runId)
+  return rows.map(mapOrchestratorTaskRun)
+}
+
+export function getOrchestratorTaskRunById(taskRunId: string): OrchestratorTaskRun | null {
+  const row = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
+    )
+    .get(taskRunId)
+  return row ? mapOrchestratorTaskRun(row) : null
+}
+
+export function createOrchestratorTaskRun(run: {
+  id: string
+  runId: string
+  taskId: number
+  plannerThreadId?: number | null
+  status: OrchestratorTaskRunStatus
+  validationStatus?: OrchestratorTaskValidationStatus
+  worktreePath?: string | null
+  branchName?: string | null
+  attempt?: number
+}): OrchestratorTaskRun {
+  getDb()
+    .prepare(
+      'INSERT INTO orchestrator_task_runs (id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      run.id,
+      run.runId,
+      run.taskId,
+      run.plannerThreadId ?? null,
+      run.status,
+      run.validationStatus ?? 'pending',
+      run.worktreePath ?? null,
+      run.branchName ?? null,
+      run.attempt ?? 1
+    )
+  const row = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
+    )
+    .get(run.id)
+  if (!row) {
+    throw new Error('Failed to load orchestrator task run')
+  }
+  return mapOrchestratorTaskRun(row)
+}
+
+export function updateOrchestratorTaskRunStatus(taskRunId: string, status: OrchestratorTaskRunStatus): OrchestratorTaskRun {
+  if (status === 'running') {
+    getDb()
+      .prepare(
+        'UPDATE orchestrator_task_runs SET status = ?, started_at = COALESCE(started_at, datetime(\'now\')) WHERE id = ?'
+      )
+      .run(status, taskRunId)
+  } else if (isTerminalOrchestratorTaskStatus(status)) {
+    getDb()
+      .prepare('UPDATE orchestrator_task_runs SET status = ?, ended_at = datetime(\'now\') WHERE id = ?')
+      .run(status, taskRunId)
+  } else {
+    getDb()
+      .prepare('UPDATE orchestrator_task_runs SET status = ? WHERE id = ?')
+      .run(status, taskRunId)
+  }
+  const row = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
+    )
+    .get(taskRunId)
+  if (!row) {
+    throw new Error('Failed to load orchestrator task run')
+  }
+  return mapOrchestratorTaskRun(row)
+}
+
+export function updateOrchestratorTaskRunValidation(
+  taskRunId: string,
+  validationStatus: OrchestratorTaskValidationStatus
+): OrchestratorTaskRun {
+  getDb()
+    .prepare('UPDATE orchestrator_task_runs SET validation_status = ? WHERE id = ?')
+    .run(validationStatus, taskRunId)
+  const row = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
+    )
+    .get(taskRunId)
+  if (!row) {
+    throw new Error('Failed to load orchestrator task run')
+  }
+  return mapOrchestratorTaskRun(row)
+}
+
+export function updateOrchestratorTaskRunDetails(taskRunId: string, payload: {
+  plannerThreadId?: number | null
+  worktreePath?: string | null
+  branchName?: string | null
+  error?: string | null
+  attempt?: number
+}): OrchestratorTaskRun {
+  const updates: string[] = []
+  const values: Array<string | number | null> = []
+  if (payload.plannerThreadId !== undefined) {
+    updates.push('planner_thread_id = ?')
+    values.push(payload.plannerThreadId ?? null)
+  }
+  if (payload.worktreePath !== undefined) {
+    updates.push('worktree_path = ?')
+    values.push(payload.worktreePath ?? null)
+  }
+  if (payload.branchName !== undefined) {
+    updates.push('branch_name = ?')
+    values.push(payload.branchName ?? null)
+  }
+  if (payload.error !== undefined) {
+    updates.push('error = ?')
+    values.push(payload.error ?? null)
+  }
+  if (payload.attempt !== undefined) {
+    updates.push('attempt = ?')
+    values.push(payload.attempt)
+  }
+  if (updates.length === 0) {
+    const existing = getOrchestratorTaskRunById(taskRunId)
+    if (!existing) {
+      throw new Error('Failed to load orchestrator task run')
+    }
+    return existing
+  }
+  values.push(taskRunId)
+  getDb()
+    .prepare(`UPDATE orchestrator_task_runs SET ${updates.join(', ')} WHERE id = ?`)
+    .run(...values)
+  const row = getDb()
+    .prepare<OrchestratorTaskRunRow>(
+      'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
+    )
+    .get(taskRunId)
+  if (!row) {
+    throw new Error('Failed to load orchestrator task run')
+  }
+  return mapOrchestratorTaskRun(row)
 }
