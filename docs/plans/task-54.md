@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Update buttons, badges, and links to new accents.\n- Adjust active/selected states to match palette.\n- Review key surfaces (cards, panels) for balance.\n- Validate focus and hover states for accessibility.\n\n## Risks/Assumptions\n- Assumes components consume shared tokens.\n- Risk of regressions in custom-styled components.\n

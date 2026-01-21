@@ -18,6 +18,8 @@ import {
   approveTaskReview,
   assignTask,
   claimTask,
+  addSubtask,
+  createAgentEvent,
   createAgent,
   createAgentRun,
   createAgentSession,
@@ -25,6 +27,7 @@ import {
   createOrchestratorTaskRun,
   createPlannerRun,
   createPlannerThread,
+  deleteSubtask,
   deleteAgent,
   deletePlannerThread,
   deleteTask,
@@ -37,6 +40,9 @@ import {
   getTaskNote,
   initDb,
   listAgents,
+  listAgentEvents,
+  listAgentRunEvents,
+  listAgentRuns,
   listAgentMessages,
   listAgentSessions,
   listOrchestratorRuns,
@@ -46,11 +52,17 @@ import {
   listPlannerMessages,
   listPlannerThreads,
   listRepos,
+  listLatestTaskValidations,
+  listSubtaskSummary,
+  listSubtasks,
   listTaskValidations,
   listTasks,
+  reorderSubtasks,
   releaseTask,
   requestTaskChanges,
   requestTaskReview,
+  updateSubtask,
+  updateTaskMetadata,
   updatePlannerRunStatus,
   updatePlannerThread,
   updateOrchestratorRunStatus,
@@ -98,6 +110,9 @@ let win: BrowserWindow | null
 const activeTerms = new Map<string, pty.IPty>()
 const activeAgentRuns = new Map<string, { proc: ReturnType<typeof spawn>; sessionId: number; canceled: boolean }>()
 const activePlannerRuns = new Map<string, { proc: ReturnType<typeof spawn>; threadId: number; canceled: boolean }>()
+const mergeStatusCache = new Map<string, { expiresAt: number; value: { baseRef: string; branchName: string; ahead: number; behind: number; needsMerge: boolean; error?: string } }>()
+
+const MERGE_STATUS_TTL_MS = 5000
 
 type OrchestratorRunConfig = {
   concurrency: number
@@ -223,6 +238,112 @@ function buildPrompt(options: {
   return `${contextBlock}${options.transcript}`.trim()
 }
 
+function resolveAgentWorkspace(repoPath: string, agentId?: number | null) {
+  if (!agentId) return repoPath
+  const agent = getAgentById(agentId)
+  if (agent && agent.workspacePath) {
+    return agent.workspacePath
+  }
+  return repoPath
+}
+
+function startAgentRunForSession(
+  event: Electron.IpcMainInvokeEvent,
+  session: { id: number; repoId: number; agentId: number | null; taskId: number | null; agentKey: string },
+  content: string
+) {
+  const repo = getRepoById(session.repoId)
+  if (!repo) {
+    throw new Error('Repo not found')
+  }
+  addAgentMessage(session.id, 'user', content)
+  const transcript = formatTranscript(listAgentMessages(session.id))
+  const task = session.taskId ? getTaskById(session.taskId) : null
+  const note = session.taskId ? getTaskNote(session.taskId) : null
+  const prompt = buildPrompt({
+    repoPath: repo.path,
+    taskTitle: task?.title,
+    taskNote: note?.content,
+    transcript,
+  })
+
+  const agentCommand = buildAgentCommand(session.agentKey as AgentKey, prompt)
+  const commandLine = [agentCommand.command, ...agentCommand.args].map(shellEscape).join(' ')
+  const runId = randomUUID()
+  const cwd = resolveAgentWorkspace(repo.path, session.agentId)
+  createAgentRun({
+    id: runId,
+    sessionId: session.id,
+    status: 'running',
+    command: commandLine,
+    cwd,
+  })
+
+  if (session.taskId) {
+    createAgentEvent({
+      repoId: session.repoId,
+      agentId: session.agentId ?? null,
+      taskId: session.taskId,
+      kind: 'run_started',
+      message: `Agent started feature #${session.taskId}${task ? `: ${task.title}` : ''}`,
+    })
+  }
+
+  const child = spawn(agentCommand.command, agentCommand.args, {
+    cwd,
+    env: { ...process.env, NO_COLOR: '1' },
+  })
+  activeAgentRuns.set(runId, { proc: child, sessionId: session.id, canceled: false })
+
+  const sendOutput = (data: { runId: string; sessionId: number; kind: string; text?: string; code?: number }) => {
+    event.sender.send('agents:output', data)
+  }
+
+  let stdoutBuffer = ''
+  let stderrBuffer = ''
+
+  child.stdout.on('data', (data) => {
+    const text = data.toString()
+    stdoutBuffer += text
+    addAgentRunEvent(runId, 'stdout', text)
+    sendOutput({ runId, sessionId: session.id, kind: 'stdout', text })
+  })
+  child.stderr.on('data', (data) => {
+    const text = data.toString()
+    stderrBuffer += text
+    addAgentRunEvent(runId, 'stderr', text)
+    sendOutput({ runId, sessionId: session.id, kind: 'stderr', text })
+  })
+  child.on('error', (error) => {
+    const message = error.message
+    stderrBuffer += message
+    addAgentRunEvent(runId, 'error', message)
+    sendOutput({ runId, sessionId: session.id, kind: 'error', text: message })
+  })
+  child.on('close', (code) => {
+    const canceled = activeAgentRuns.get(runId)?.canceled ?? false
+    const status = canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed'
+    updateAgentRunStatus(runId, status)
+    activeAgentRuns.delete(runId)
+    const finalText = stdoutBuffer.trim() ? stdoutBuffer : stderrBuffer
+    if (finalText.trim()) {
+      addAgentMessage(session.id, 'assistant', finalText.trim())
+    }
+    if (session.taskId) {
+      createAgentEvent({
+        repoId: session.repoId,
+        agentId: session.agentId ?? null,
+        taskId: session.taskId,
+        kind: status === 'succeeded' ? 'run_complete' : 'run_failed',
+        message: `Agent ${status === 'succeeded' ? 'completed' : 'failed'} feature #${session.taskId}${task ? `: ${task.title}` : ''}`,
+      })
+    }
+    sendOutput({ runId, sessionId: session.id, kind: 'exit', code: code ?? -1 })
+  })
+
+  return { runId }
+}
+
 function getRepoBaseRef(repoPath: string, requested?: string) {
   if (requested && requested.trim()) return requested.trim()
   try {
@@ -238,6 +359,39 @@ function getRepoBaseRef(repoPath: string, requested?: string) {
     // ignore
   }
   return execFileSync('git', ['-C', repoPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+}
+
+function getMergeStatus(repoPath: string, baseRef: string, branchName: string) {
+  const cacheKey = `${repoPath}::${baseRef}::${branchName}`
+  const cached = mergeStatusCache.get(cacheKey)
+  const now = Date.now()
+  if (cached && cached.expiresAt > now) {
+    return cached.value
+  }
+  try {
+    const output = execFileSync(
+      'git',
+      ['-C', repoPath, 'rev-list', '--left-right', '--count', `${baseRef}...${branchName}`],
+      { encoding: 'utf8' }
+    ).trim()
+    const [behindRaw, aheadRaw] = output.split(/\s+/)
+    const behind = Number(behindRaw ?? 0)
+    const ahead = Number(aheadRaw ?? 0)
+    const value = {
+      baseRef,
+      branchName,
+      ahead: Number.isFinite(ahead) ? ahead : 0,
+      behind: Number.isFinite(behind) ? behind : 0,
+      needsMerge: Number.isFinite(ahead) ? ahead > 0 : false,
+    }
+    mergeStatusCache.set(cacheKey, { expiresAt: now + MERGE_STATUS_TTL_MS, value })
+    return value
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to compute merge status'
+    const value = { baseRef, branchName, ahead: 0, behind: 0, needsMerge: false, error: message }
+    mergeStatusCache.set(cacheKey, { expiresAt: now + MERGE_STATUS_TTL_MS, value })
+    return value
+  }
 }
 
 function createPlannerWorktree(repoPath: string, baseRef: string, worktreePath: string) {
@@ -422,7 +576,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
     } else {
       updateOrchestratorTaskRunDetails(work.taskRunId, { error: message, branchName })
       updateOrchestratorTaskRunStatus(work.taskRunId, 'failed')
-      updateTaskStatus(work.taskId, 'failed')
+      updateTaskStatus(work.taskId, 'executed')
       addOrchestratorRunEvent(state.runId, 'task:error', JSON.stringify({ taskRunId: work.taskRunId, taskId: work.taskId, message }))
       state.failures += 1
     }
@@ -524,7 +678,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
     }
     if (canceled) {
       status = 'canceled'
-      updateTaskStatus(work.taskId, 'canceled')
+      updateTaskStatus(work.taskId, 'executed')
     } else if (code === 0) {
       if (hasValidation) {
         updateOrchestratorTaskRunValidation(work.taskRunId, 'running')
@@ -548,7 +702,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
           updateOrchestratorTaskRunValidation(work.taskRunId, 'failed')
           const message = result.output || 'Worker validation failed'
           updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
-          const retried = enqueueRetry(message, 'failed')
+          const retried = enqueueRetry(message, 'executed')
           if (retried) {
             status = 'queued'
             shouldLogComplete = false
@@ -598,7 +752,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
               updateOrchestratorTaskRunValidation(work.taskRunId, 'failed')
               const message = result.output || 'Integration validation failed'
               updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
-              const retried = enqueueRetry(message, 'blocked')
+              const retried = enqueueRetry(message, 'executed')
               if (retried) {
                 status = 'queued'
                 shouldLogComplete = false
@@ -635,7 +789,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
             // ignore abort failures
           }
           updateOrchestratorTaskRunDetails(work.taskRunId, { error: message })
-          const retried = enqueueRetry(message, 'blocked')
+          const retried = enqueueRetry(message, 'executed')
           if (retried) {
             status = 'queued'
             shouldLogComplete = false
@@ -655,7 +809,7 @@ function startOrchestratorTask(state: OrchestratorRunState, work: OrchestratorTa
     } else {
       const errorText = activeTask.stderr.trim() || activeTask.stdout.trim() || 'Worker failed'
       updateOrchestratorTaskRunDetails(work.taskRunId, { error: errorText })
-      const retried = enqueueRetry(errorText, 'failed')
+      const retried = enqueueRetry(errorText, 'executed')
       if (retried) {
         status = 'queued'
         shouldLogComplete = false
@@ -735,26 +889,26 @@ function startOrchestratorRun(payload: {
         .filter((task) => task.repoId === repo.id)
     : listTasks(repo.id)
 
-  const eligibleTasks = candidateTasks.filter((task) => task.status === 'backlog')
-  const skippedTasks = candidateTasks.filter((task) => task.status !== 'backlog')
+  const eligibleTasks = candidateTasks.filter((task) => task.status === 'planned')
+  const skippedTasks = candidateTasks.filter((task) => task.status !== 'planned')
   if (skippedTasks.length > 0) {
     addOrchestratorRunEvent(
       runId,
       'task:skip',
-      JSON.stringify({ taskIds: skippedTasks.map((task) => task.id), reason: 'status_not_backlog' })
+      JSON.stringify({ taskIds: skippedTasks.map((task) => task.id), reason: 'status_not_planned' })
     )
   }
 
   if (eligibleTasks.length === 0) {
     updateOrchestratorRunStatus(runId, 'succeeded')
-    addOrchestratorRunEvent(runId, 'run:empty', JSON.stringify({ reason: 'no_backlog_tasks' }))
+    addOrchestratorRunEvent(runId, 'run:empty', JSON.stringify({ reason: 'no_planned_tasks' }))
     return { runId }
   }
 
   const orderedTasks = eligibleTasks.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   const queue: OrchestratorTaskWork[] = orderedTasks.map((task) => {
     const note = getTaskNote(task.id)?.content ?? null
-    updateTaskStatus(task.id, 'in_progress')
+    updateTaskStatus(task.id, 'executed')
     const taskRunId = randomUUID()
     createOrchestratorTaskRun({
       id: taskRunId,
@@ -803,7 +957,7 @@ function cancelOrchestratorRun(runId: string) {
 
   for (const queued of state.queue) {
     updateOrchestratorTaskRunStatus(queued.taskRunId, 'canceled')
-    updateTaskStatus(queued.taskId, 'canceled')
+    updateTaskStatus(queued.taskId, 'planned')
   }
   state.queue = []
 
@@ -822,7 +976,7 @@ function haltOrchestratorRun(state: OrchestratorRunState, reason: string) {
   addOrchestratorRunEvent(state.runId, 'run:halted', JSON.stringify({ reason }))
   for (const queued of state.queue) {
     updateOrchestratorTaskRunStatus(queued.taskRunId, 'canceled')
-    updateTaskStatus(queued.taskId, 'backlog')
+    updateTaskStatus(queued.taskId, 'planned')
   }
   state.queue = []
 }
@@ -913,8 +1067,8 @@ function recoverOrchestratorRuns() {
       if (taskRun.status === 'running' || taskRun.status === 'queued') {
         updateOrchestratorTaskRunStatus(taskRun.id, 'canceled')
         const task = getTaskById(taskRun.taskId)
-        if (task && task.status === 'in_progress') {
-          updateTaskStatus(task.id, 'canceled')
+        if (task && task.status === 'executed') {
+          updateTaskStatus(task.id, 'planned')
         }
       }
     }
@@ -961,10 +1115,40 @@ function isGitRepo(repoPath: string) {
   return fs.existsSync(path.join(repoPath, '.git'))
 }
 
-function registerIpcHandlers() {
-  ipcMain.handle('repos:list', () => listRepos())
+function isInternalWorktreePath(repoPath: string) {
+  const userDataPath = app.getPath('userData')
+  const plannerRoot = path.join(userDataPath, 'planner-worktrees')
+  const orchestratorRoot = path.join(userDataPath, 'orchestrator-worktrees')
+  const resolved = path.resolve(repoPath)
+  return (
+    resolved === plannerRoot ||
+    resolved.startsWith(plannerRoot + path.sep) ||
+    resolved === orchestratorRoot ||
+    resolved.startsWith(orchestratorRoot + path.sep)
+  )
+}
 
-  ipcMain.handle('repos:add', (_event, repoPath: string) => addRepo(repoPath))
+function registerIpcHandlers() {
+  ipcMain.handle('repos:list', () =>
+    listRepos().filter((repo) => !isInternalWorktreePath(repo.path) && fs.existsSync(repo.path))
+  )
+
+  ipcMain.handle('repos:add', (_event, repoPath: string) => {
+    const normalizedPath = repoPath.trim()
+    if (!normalizedPath) {
+      throw new Error('Repo path is required')
+    }
+    if (isInternalWorktreePath(normalizedPath)) {
+      throw new Error('Cannot add internal agent worktree paths as repositories.')
+    }
+    if (!fs.existsSync(normalizedPath)) {
+      throw new Error('Repo path does not exist.')
+    }
+    if (!isGitRepo(normalizedPath)) {
+      throw new Error('Selected folder is not a git repository.')
+    }
+    return addRepo(normalizedPath)
+  })
 
   ipcMain.handle('tasks:list', (_event, repoId?: number) => listTasks(repoId))
 
@@ -986,13 +1170,59 @@ function registerIpcHandlers() {
     return upsertTaskNote(payload.taskId, payload.content)
   })
 
+  ipcMain.handle('tasks:metadata:update', (_event, payload: {
+    taskId: number
+    baseRef?: string | null
+    worktreePath?: string | null
+    branchName?: string | null
+    needsReview?: boolean
+    planDocPath?: string | null
+  }) => {
+    return updateTaskMetadata(payload.taskId, {
+      baseRef: payload.baseRef ?? undefined,
+      worktreePath: payload.worktreePath ?? undefined,
+      branchName: payload.branchName ?? undefined,
+      needsReview: payload.needsReview,
+      planDocPath: payload.planDocPath ?? undefined,
+    })
+  })
+
+  ipcMain.handle('tasks:validations:latest', (_event, payload: { taskIds: number[] }) => {
+    const ids = Array.isArray(payload?.taskIds) ? payload.taskIds.filter((id) => Number.isFinite(id)) : []
+    return listLatestTaskValidations(ids)
+  })
+
+  ipcMain.handle('tasks:merge:status', (_event, payload: { taskId: number }) => {
+    const task = getTaskById(payload.taskId)
+    if (!task) {
+      throw new Error('Task not found')
+    }
+    const repo = getRepoById(task.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const baseRef = task.baseRef ?? getRepoBaseRef(repo.path)
+    const branchName = task.branchName
+    if (!branchName) {
+      return { baseRef, branchName: '', ahead: 0, behind: 0, needsMerge: false }
+    }
+    return getMergeStatus(repo.path, baseRef, branchName)
+  })
+
   ipcMain.handle('agents:list', (_event, repoId?: number) => listAgents(repoId))
 
-  ipcMain.handle('agents:create', (_event, payload: { repoId: number; name: string; provider: AgentKey; workspacePath?: string | null }) => {
+  ipcMain.handle('agents:create', (_event, payload: {
+    repoId: number
+    name: string
+    provider: AgentKey
+    role?: 'worker' | 'validator'
+    workspacePath?: string | null
+  }) => {
     return createAgent({
       repoId: payload.repoId,
       name: payload.name,
       provider: payload.provider,
+      role: payload.role,
       workspacePath: payload.workspacePath ?? null,
     })
   })
@@ -1001,18 +1231,48 @@ function registerIpcHandlers() {
     agentId: number
     name?: string
     provider?: AgentKey
+    role?: 'worker' | 'validator'
     workspacePath?: string | null
     status?: 'active' | 'paused'
   }) => {
     return updateAgent(payload.agentId, {
       name: payload.name,
       provider: payload.provider,
+      role: payload.role,
       workspacePath: payload.workspacePath ?? null,
       status: payload.status,
     })
   })
 
   ipcMain.handle('agents:delete', (_event, agentId: number) => deleteAgent(agentId))
+
+  ipcMain.handle('agents:events:list', (_event, payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) => {
+    return listAgentEvents(payload ?? {})
+  })
+
+  ipcMain.handle('agents:events:add', (_event, payload: {
+    repoId: number
+    agentId?: number | null
+    taskId?: number | null
+    kind: string
+    message: string
+  }) => {
+    if (payload.agentId) {
+      const agent = getAgentById(payload.agentId)
+      if (!agent) throw new Error('Agent not found')
+      if (agent.repoId !== payload.repoId) {
+        throw new Error('Agent does not belong to this repo')
+      }
+    }
+    if (payload.taskId) {
+      const task = getTaskById(payload.taskId)
+      if (!task) throw new Error('Task not found')
+      if (task.repoId !== payload.repoId) {
+        throw new Error('Task does not belong to this repo')
+      }
+    }
+    return createAgentEvent(payload)
+  })
 
   ipcMain.handle('tasks:assign', (_event, payload: { taskId: number; agentId: number | null }) => {
     if (payload.agentId) {
@@ -1109,12 +1369,46 @@ function registerIpcHandlers() {
     })
   })
 
+  ipcMain.handle('subtasks:list', (_event, payload: { featureId: number }) => {
+    return listSubtasks(payload.featureId)
+  })
+
+  ipcMain.handle('subtasks:add', (_event, payload: { featureId: number; title: string; status?: 'todo' | 'doing' | 'done'; orderIndex?: number | null }) => {
+    return addSubtask({
+      featureId: payload.featureId,
+      title: payload.title,
+      status: payload.status,
+      orderIndex: payload.orderIndex,
+    })
+  })
+
+  ipcMain.handle('subtasks:update', (_event, payload: { subtaskId: number; title?: string; status?: 'todo' | 'doing' | 'done'; orderIndex?: number | null }) => {
+    return updateSubtask(payload.subtaskId, {
+      title: payload.title,
+      status: payload.status,
+      orderIndex: payload.orderIndex ?? undefined,
+    })
+  })
+
+  ipcMain.handle('subtasks:delete', (_event, payload: { subtaskId: number }) => {
+    return deleteSubtask(payload.subtaskId)
+  })
+
+  ipcMain.handle('subtasks:reorder', (_event, payload: { featureId: number; orderedIds: number[] }) => {
+    return reorderSubtasks(payload.featureId, payload.orderedIds)
+  })
+
+  ipcMain.handle('subtasks:summary', (_event, payload: { featureIds: number[] }) => {
+    const ids = Array.isArray(payload?.featureIds) ? payload.featureIds.filter((id) => Number.isFinite(id)) : []
+    return listSubtaskSummary(ids)
+  })
+
   ipcMain.handle('app:db:path', () => getDbPath())
 
   ipcMain.handle('agents:sessions:list', (_event, repoId?: number) => listAgentSessions(repoId))
 
-  ipcMain.handle('agents:sessions:create', (_event, payload: { repoId: number; agentKey: AgentKey; taskId?: number | null }) => {
-    return createAgentSession(payload.repoId, payload.agentKey, payload.taskId)
+  ipcMain.handle('agents:sessions:create', (_event, payload: { repoId: number; agentKey: AgentKey; taskId?: number | null; agentId?: number | null }) => {
+    return createAgentSession(payload.repoId, payload.agentKey, payload.taskId, payload.agentId ?? null)
   })
 
   ipcMain.handle('agents:messages:list', (_event, sessionId: number) => listAgentMessages(sessionId))
@@ -1124,81 +1418,90 @@ function registerIpcHandlers() {
     if (!session) {
       throw new Error('Session not found')
     }
-    const repo = getRepoById(session.repoId)
-    if (!repo) {
-      throw new Error('Repo not found')
-    }
     const content = payload.content.trim()
     if (!content) {
       throw new Error('Message is required')
     }
+    return startAgentRunForSession(event, session, content)
+  })
 
-    addAgentMessage(session.id, 'user', content)
-    const transcript = formatTranscript(listAgentMessages(session.id))
-    const task = session.taskId ? getTaskById(session.taskId) : null
-    const note = session.taskId ? getTaskNote(session.taskId) : null
-    const prompt = buildPrompt({
-      repoPath: repo.path,
-      taskTitle: task?.title,
-      taskNote: note?.content,
-      transcript,
+  ipcMain.handle('agents:task:start', (event, payload: { taskId: number; agentId: number; message?: string }) => {
+    const task = getTaskById(payload.taskId)
+    if (!task) {
+      throw new Error('Task not found')
+    }
+    const agent = getAgentById(payload.agentId)
+    if (!agent) {
+      throw new Error('Agent not found')
+    }
+    if (agent.repoId !== task.repoId) {
+      throw new Error('Agent does not belong to this repo')
+    }
+    const repo = getRepoById(task.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const worktreePath = agent.workspacePath ?? repo.path
+    let branchName: string | null = null
+    try {
+      const branch = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim()
+      branchName = branch && branch !== 'HEAD' ? branch : null
+    } catch {
+      branchName = null
+    }
+    updateTaskMetadata(task.id, {
+      worktreePath,
+      branchName,
+      baseRef: task.baseRef ?? getRepoBaseRef(repo.path),
     })
+    const session = createAgentSession(task.repoId, agent.provider, task.id, agent.id)
+    const message = payload.message?.trim() || `Begin work on feature: ${task.title}. Provide concise activity updates and any commands you run.`
+    const { runId } = startAgentRunForSession(event, session, message)
+    return { runId, sessionId: session.id }
+  })
 
-    const agentCommand = buildAgentCommand(session.agentKey as AgentKey, prompt)
-    const commandLine = [agentCommand.command, ...agentCommand.args].map(shellEscape).join(' ')
-    const runId = randomUUID()
-    createAgentRun({
-      id: runId,
-      sessionId: session.id,
-      status: 'running',
-      command: commandLine,
-      cwd: repo.path,
-    })
+  ipcMain.handle('agents:feature:start', (event, payload: { taskId: number; agentKey?: AgentKey; message?: string }) => {
+    const task = getTaskById(payload.taskId)
+    if (!task) {
+      throw new Error('Task not found')
+    }
+    const repo = getRepoById(task.repoId)
+    if (!repo) {
+      throw new Error('Repo not found')
+    }
+    const agentKey: AgentKey = payload.agentKey ?? 'codex'
+    const session = createAgentSession(task.repoId, agentKey, task.id, null)
 
-    const child = spawn(agentCommand.command, agentCommand.args, {
-      cwd: repo.path,
-      env: { ...process.env, NO_COLOR: '1' },
-    })
-    activeAgentRuns.set(runId, { proc: child, sessionId: session.id, canceled: false })
-
-    const sendOutput = (data: { runId: string; sessionId: number; kind: string; text?: string; code?: number }) => {
-      event.sender.send('agents:output', data)
+    let branchName: string | null = null
+    try {
+      const branch = execFileSync('git', ['-C', repo.path, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim()
+      branchName = branch && branch !== 'HEAD' ? branch : null
+    } catch {
+      branchName = null
     }
 
-    let stdoutBuffer = ''
-    let stderrBuffer = ''
+    let updatedTask = task
+    if (task.status === 'planned') {
+      updatedTask = updateTaskStatus(task.id, 'executed')
+    }
 
-    child.stdout.on('data', (data) => {
-      const text = data.toString()
-      stdoutBuffer += text
-      addAgentRunEvent(runId, 'stdout', text)
-      sendOutput({ runId, sessionId: session.id, kind: 'stdout', text })
-    })
-    child.stderr.on('data', (data) => {
-      const text = data.toString()
-      stderrBuffer += text
-      addAgentRunEvent(runId, 'stderr', text)
-      sendOutput({ runId, sessionId: session.id, kind: 'stderr', text })
-    })
-    child.on('error', (error) => {
-      const message = error.message
-      stderrBuffer += message
-      addAgentRunEvent(runId, 'error', message)
-      sendOutput({ runId, sessionId: session.id, kind: 'error', text: message })
-    })
-    child.on('close', (code) => {
-      const canceled = activeAgentRuns.get(runId)?.canceled ?? false
-      const status = canceled ? 'canceled' : code === 0 ? 'succeeded' : 'failed'
-      updateAgentRunStatus(runId, status)
-      activeAgentRuns.delete(runId)
-      const finalText = stdoutBuffer.trim() ? stdoutBuffer : stderrBuffer
-      if (finalText.trim()) {
-        addAgentMessage(session.id, 'assistant', finalText.trim())
-      }
-      sendOutput({ runId, sessionId: session.id, kind: 'exit', code: code ?? -1 })
+    updatedTask = updateTaskMetadata(task.id, {
+      worktreePath: repo.path,
+      branchName,
+      baseRef: task.baseRef ?? getRepoBaseRef(repo.path),
     })
 
-    return { runId }
+    const message = payload.message?.trim() || `Begin work on feature: ${task.title}. Use the plan and notes, run tests as needed, and share progress updates.`
+    const { runId } = startAgentRunForSession(event, session, message)
+    return { session, runId, task: updatedTask }
+  })
+
+  ipcMain.handle('agents:runs:list', (_event, payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) => {
+    return listAgentRuns(payload ?? {})
+  })
+
+  ipcMain.handle('agents:runs:events', (_event, payload: { runId: string; limit?: number }) => {
+    return listAgentRunEvents(payload.runId, payload.limit)
   })
 
   ipcMain.handle('agents:run:cancel', (_event, runId: string) => {
@@ -1224,6 +1527,12 @@ function registerIpcHandlers() {
     const repo = getRepoById(payload.repoId)
     if (!repo) {
       throw new Error('Repo not found')
+    }
+    if (!fs.existsSync(repo.path)) {
+      throw new Error('Repo path is missing. Remove and re-add the repo.')
+    }
+    if (isInternalWorktreePath(repo.path)) {
+      throw new Error('Selected repo is an internal worktree. Please select the root repo.')
     }
     const baseBranch = getRepoBaseRef(repo.path, payload.baseBranch)
     const worktreeRoot = path.join(app.getPath('userData'), 'planner-worktrees', `repo-${repo.id}`)
@@ -1478,7 +1787,8 @@ function registerIpcHandlers() {
       }
 
       try {
-        const shellCommand = (commandLine ?? [command, ...args].map(shellEscape).join(' ')).trim()
+        const parts = [command, ...args].filter((value): value is string => Boolean(value && value.trim()))
+        const shellCommand = (commandLine ?? parts.map(shellEscape).join(' ')).trim()
         if (!shellCommand) {
           throw new Error('Command is required')
         }

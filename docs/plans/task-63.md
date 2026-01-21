@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Add FPS-friendly limits and adaptive quality.\n- Provide toggle to disable or simplify 3D view.\n- Implement pause when tab/app is inactive.\n- Add metrics logging for perf tuning.\n\n## Risks/Assumptions\n- Assumes perf bottlenecks can be mitigated in-app.\n- Risk of hardware variability on user machines.\n

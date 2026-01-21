@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Define agent state mapping (status, activity, load).\n- Specify layout rules (grid/constellation/orbit).\n- Decide how updates stream into the scene.\n- Document mapping for future animation logic.\n\n## Risks/Assumptions\n- Assumes stable agent state shape exists.\n- Risk of missing data for visualization cues.\n

@@ -1,25 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Moon, Sun } from 'lucide-react'
 import './App.css'
-import { KanbanBoard } from './components/KanbanBoard'
-import { TaskDrawer } from './components/TaskDrawer'
+import { FeatureBoard } from './components/FeatureBoard'
+import { FeatureDrawer } from './components/FeatureDrawer'
 import { Layout } from './components/Layout'
-import { PlannerPanel } from './components/PlannerPanel'
-import { OrchestratorPanel } from './components/OrchestratorPanel'
-import { AgentsPanel } from './components/AgentsPanel'
+import { ThreadsPanel } from './components/ThreadsPanel'
 import { RepoToolbar } from './components/RepoToolbar'
 import { ResizableSidebar } from './components/ResizableSidebar'
-import { extractTasksFromText } from './lib/agentParsing'
-import { cn } from './lib/utils'
+import { extractFeaturePlanFromText } from './lib/agentParsing'
 import type {
-  Agent,
-  OrchestratorRunEvent,
-  OrchestratorRun,
-  OrchestratorTaskRun,
-  OrchestratorValidationArtifact,
+  AgentEvent,
+  AgentMessage,
+  AgentRunSummary,
+  AgentSession,
   PlannerMessage,
   PlannerThread,
   Repo,
   StreamingMessage,
+  Subtask,
   Task,
   TaskStatus,
   TaskValidation,
@@ -30,18 +28,9 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
-const defaultOrchestratorConfig = {
-  concurrency: 2,
-  maxAttempts: 2,
-  conflictPolicy: 'halt' as const,
-  baseBranch: '',
-  model: '',
-  reasoningEffort: '',
-  sandbox: '',
-  approval: '',
-  workerValidationCommand: '',
-  integrationValidationCommand: '',
-}
+type ThemeMode = 'light' | 'dark'
+
+type ThreadKind = 'planner' | 'execution'
 
 function App() {
   // State
@@ -51,8 +40,11 @@ function App() {
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null)
   const [taskNote, setTaskNote] = useState('')
   const [taskNoteStatus, setTaskNoteStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [activeAgentId, setActiveAgentId] = useState<number | null>(null)
+  const [subtasksByFeature, setSubtasksByFeature] = useState<Record<number, Subtask[]>>({})
+  const [subtaskSummary, setSubtaskSummary] = useState<Record<number, { todo: number; doing: number; done: number; total: number }>>({})
+  const [latestValidationsByTask, setLatestValidationsByTask] = useState<Record<number, TaskValidation | undefined>>({})
+  const [mergeStatusByTask, setMergeStatusByTask] = useState<Record<number, { baseRef: string; branchName: string; ahead: number; behind: number; needsMerge: boolean; error?: string }>>({})
+  const [agentRuns, setAgentRuns] = useState<AgentRunSummary[]>([])
   const [taskValidations, setTaskValidations] = useState<TaskValidation[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null)
@@ -64,37 +56,27 @@ function App() {
   const [plannerRunIds, setPlannerRunIds] = useState<Record<number, string>>({})
   const [plannerThinkingByThreadId, setPlannerThinkingByThreadId] = useState<Record<number, { runId: string; stderr: string }>>({})
 
-  const [orchestratorRuns, setOrchestratorRuns] = useState<OrchestratorRun[]>([])
-  const [activeOrchestratorRunId, setActiveOrchestratorRunId] = useState<string | null>(null)
-  const [orchestratorTasks, setOrchestratorTasks] = useState<OrchestratorTaskRun[]>([])
-  const [orchestratorEvents, setOrchestratorEvents] = useState<OrchestratorRunEvent[]>([])
-  const [orchestratorValidationArtifacts, setOrchestratorValidationArtifacts] = useState<OrchestratorValidationArtifact[]>([])
-  const [orchestratorConfig, setOrchestratorConfig] = useState(() => {
-    if (typeof window === 'undefined') return defaultOrchestratorConfig
+  const [agentSessions, setAgentSessions] = useState<AgentSession[]>([])
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState<number | null>(null)
+  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([])
+  const [agentStreamingMessage, setAgentStreamingMessage] = useState<StreamingMessage | null>(null)
+  const [agentRunIds, setAgentRunIds] = useState<Record<number, string>>({})
+  const [agentThinkingBySessionId, setAgentThinkingBySessionId] = useState<Record<number, { runId: string; stderr: string }>>({})
+  const [latestAgentEventsByTask, setLatestAgentEventsByTask] = useState<Record<number, AgentEvent | undefined>>({})
+  const [activeThreadKind, setActiveThreadKind] = useState<ThreadKind | null>(null)
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    if (typeof window === 'undefined') return 'light'
     try {
-      const stored = window.localStorage.getItem('orchestratorConfig')
-      if (!stored) return defaultOrchestratorConfig
-      const parsed = JSON.parse(stored) as Partial<typeof defaultOrchestratorConfig>
-      return { ...defaultOrchestratorConfig, ...parsed }
+      const stored = window.localStorage.getItem('theme')
+      if (stored === 'light' || stored === 'dark') return stored
     } catch {
-      return defaultOrchestratorConfig
+      // ignore storage failures
     }
-  })
-  const [sidebarView, setSidebarView] = useState<'planner' | 'orchestrator' | 'agents'>(() => {
-    if (typeof window === 'undefined') return 'planner'
-    try {
-      const stored = window.localStorage.getItem('sidebarView')
-      if (stored === 'planner' || stored === 'orchestrator' || stored === 'agents') {
-        return stored
-      }
-      return 'planner'
-    } catch {
-      return 'planner'
-    }
+    if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark'
+    return 'light'
   })
 
   const taskPollIntervalMs = 2000
-  const orchestratorPollIntervalMs = 2500
 
   // Derived State
   const selectedRepo = useMemo(() => repos.find((r) => r.id === selectedRepoId) ?? null, [repos, selectedRepoId])
@@ -102,22 +84,104 @@ function App() {
     () => (activeTaskId ? tasks.find((task) => task.id === activeTaskId) ?? null : null),
     [activeTaskId, tasks]
   )
-  const activePlannerThread = useMemo(
-    () => (activePlannerThreadId ? plannerThreads.find((thread) => thread.id === activePlannerThreadId) ?? null : null),
-    [activePlannerThreadId, plannerThreads]
-  )
-  const activeOrchestratorRun = useMemo(
-    () => (activeOrchestratorRunId ? orchestratorRuns.find((run) => run.id === activeOrchestratorRunId) ?? null : null),
-    [activeOrchestratorRunId, orchestratorRuns]
-  )
-  const activeAgent = useMemo(
-    () => (activeAgentId ? agents.find((agent) => agent.id === activeAgentId) ?? null : null),
-    [activeAgentId, agents]
-  )
-  const assignedAgent = useMemo(
-    () => (activeTask?.assignedAgentId ? agents.find((agent) => agent.id === activeTask.assignedAgentId) ?? null : null),
-    [activeTask, agents]
-  )
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
+  const threadItems = useMemo(() => {
+    const plannerItems = plannerThreads.map((thread) => ({
+      id: thread.id,
+      kind: 'planner' as const,
+      title: thread.title,
+      subtitle: `Planner · Base ${thread.baseBranch}`,
+      timestamp: thread.lastUsedAt ?? thread.createdAt,
+      baseBranch: thread.baseBranch,
+      model: thread.model,
+      reasoningEffort: thread.reasoningEffort,
+      sandbox: thread.sandbox,
+      approval: thread.approval,
+      worktreePath: thread.worktreePath,
+    }))
+    const agentItems = agentSessions.map((session) => {
+      const feature = session.taskId ? taskById.get(session.taskId) ?? null : null
+      return {
+        id: session.id,
+        kind: 'execution' as const,
+        title: feature?.title ?? 'Execution Thread',
+        subtitle: feature ? `Feature #${feature.id}` : 'General thread',
+        timestamp: session.createdAt,
+        agentKey: session.agentKey,
+        featureId: feature?.id ?? null,
+        worktreePath: feature?.worktreePath ?? null,
+        branchName: feature?.branchName ?? null,
+      }
+    })
+    return [...plannerItems, ...agentItems].sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
+  }, [plannerThreads, agentSessions, taskById])
+
+  const activeThreadItem = useMemo(() => {
+    if (!activeThreadKind) return null
+    const activeId = activeThreadKind === 'planner' ? activePlannerThreadId : activeAgentSessionId
+    if (!activeId) return null
+    return threadItems.find((item) => item.kind === activeThreadKind && item.id === activeId) ?? null
+  }, [activeThreadKind, activePlannerThreadId, activeAgentSessionId, threadItems])
+
+  const featureThreadById = useMemo(() => {
+    const map: Record<number, { sessionId: number; agentKey: AgentSession['agentKey']; createdAt: string }> = {}
+    agentSessions.forEach((session) => {
+      if (!session.taskId) return
+      const existing = map[session.taskId]
+      if (!existing || existing.createdAt < session.createdAt) {
+        map[session.taskId] = { sessionId: session.id, agentKey: session.agentKey, createdAt: session.createdAt }
+      }
+    })
+    return map
+  }, [agentSessions])
+
+  const runningByFeature = useMemo(() => {
+    const map: Record<number, boolean> = {}
+    agentRuns.forEach((run) => {
+      if (!run.taskId) return
+      if (run.status === 'running') {
+        map[run.taskId] = true
+      }
+    })
+    return map
+  }, [agentRuns])
+
+  const activeThreadMessages =
+    activeThreadKind === 'planner' ? plannerMessages : activeThreadKind === 'execution' ? agentMessages : []
+  const activeThreadStreaming =
+    activeThreadKind === 'planner' ? plannerStreamingMessage : activeThreadKind === 'execution' ? agentStreamingMessage : null
+  const activeThreadRunId =
+    activeThreadKind === 'planner'
+      ? activePlannerThreadId
+        ? plannerRunIds[activePlannerThreadId] ?? null
+        : null
+      : activeThreadKind === 'execution'
+        ? activeAgentSessionId
+          ? agentRunIds[activeAgentSessionId] ?? null
+          : null
+        : null
+  const activeThreadThinking =
+    activeThreadKind === 'planner'
+      ? activePlannerThreadId
+        ? plannerThinkingByThreadId[activePlannerThreadId]?.stderr ?? ''
+        : ''
+      : activeThreadKind === 'execution'
+        ? activeAgentSessionId
+          ? agentThinkingBySessionId[activeAgentSessionId]?.stderr ?? ''
+          : ''
+        : ''
+  const activeThreadThinkingRunId =
+    activeThreadKind === 'planner'
+      ? activePlannerThreadId
+        ? plannerThinkingByThreadId[activePlannerThreadId]?.runId ?? null
+        : null
+      : activeThreadKind === 'execution'
+        ? activeAgentSessionId
+          ? agentThinkingBySessionId[activeAgentSessionId]?.runId ?? null
+          : null
+        : null
+
+  const activeFeatureThread = activeTaskId ? featureThreadById[activeTaskId] ?? null : null
 
   // Initial load
   useEffect(() => {
@@ -131,21 +195,36 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.theme = theme
     try {
-      window.localStorage.setItem('orchestratorConfig', JSON.stringify(orchestratorConfig))
+      window.localStorage.setItem('theme', theme)
     } catch {
       // ignore storage failures
     }
-  }, [orchestratorConfig])
+  }, [theme])
+
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      window.localStorage.setItem('sidebarView', sidebarView)
-    } catch {
-      // ignore storage failures
+    if (threadItems.length === 0) {
+      if (activeThreadKind) {
+        setActiveThreadKind(null)
+        setActivePlannerThreadId(null)
+        setActiveAgentSessionId(null)
+      }
+      return
     }
-  }, [sidebarView])
+    const activeId = activeThreadKind === 'planner' ? activePlannerThreadId : activeThreadKind === 'execution' ? activeAgentSessionId : null
+    const exists = activeId ? threadItems.some((item) => item.kind === activeThreadKind && item.id === activeId) : false
+    if (!exists) {
+      const next = threadItems[0]
+      setActiveThreadKind(next.kind)
+      if (next.kind === 'planner') {
+        setActivePlannerThreadId(next.id)
+      } else {
+        setActiveAgentSessionId(next.id)
+      }
+    }
+  }, [threadItems, activeThreadKind, activePlannerThreadId, activeAgentSessionId])
 
   // Repo selection effects
   useEffect(() => {
@@ -177,6 +256,57 @@ function App() {
     }
   }, [selectedRepoId, activePlannerThreadId])
 
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setSubtaskSummary({})
+      setLatestValidationsByTask({})
+      return
+    }
+    const featureIds = tasks.map((task) => task.id)
+    if (featureIds.length === 0) {
+      setSubtaskSummary({})
+      setLatestValidationsByTask({})
+      return
+    }
+    window.api
+      .listSubtaskSummary({ featureIds })
+      .then(setSubtaskSummary)
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load subtask summary.')))
+    window.api
+      .listLatestTaskValidations({ taskIds: featureIds })
+      .then((latest) => {
+        const map: Record<number, TaskValidation | undefined> = {}
+        latest.forEach((item) => {
+          map[item.taskId] = item
+        })
+        setLatestValidationsByTask(map)
+      })
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load latest validations.')))
+  }, [tasks, selectedRepoId])
+
+  useEffect(() => {
+    const candidates = tasks.filter((task) => task.status === 'executed' && task.branchName)
+    if (candidates.length === 0) {
+      setMergeStatusByTask({})
+      return
+    }
+    Promise.all(
+      candidates.map((task) =>
+        window.api
+          .getTaskMergeStatus({ taskId: task.id })
+          .then((status) => ({ taskId: task.id, status }))
+          .catch(() => null)
+      )
+    ).then((results) => {
+      const next: Record<number, { baseRef: string; branchName: string; ahead: number; behind: number; needsMerge: boolean; error?: string }> = {}
+      results.forEach((result) => {
+        if (!result) return
+        next[result.taskId] = result.status
+      })
+      setMergeStatusByTask(next)
+    })
+  }, [tasks])
+
   // Task note effects
   useEffect(() => {
     if (!activeTaskId) {
@@ -194,6 +324,17 @@ function App() {
   }, [activeTaskId])
 
   useEffect(() => {
+    if (!activeTaskId) return
+    if (subtasksByFeature[activeTaskId]) return
+    window.api
+      .listSubtasks({ featureId: activeTaskId })
+      .then((data) => {
+        setSubtasksByFeature((prev) => ({ ...prev, [activeTaskId]: data }))
+      })
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load subtasks.')))
+  }, [activeTaskId, subtasksByFeature])
+
+  useEffect(() => {
     if (!activeTaskId) {
       setTaskValidations([])
       return
@@ -204,27 +345,96 @@ function App() {
       .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load task validations.')))
   }, [activeTaskId])
 
-  // Agents
+  // Agent sessions
   useEffect(() => {
     if (!selectedRepoId) {
-      setAgents([])
-      setActiveAgentId(null)
+      setAgentSessions([])
+      setActiveAgentSessionId(null)
+      setAgentMessages([])
+      setAgentRunIds({})
+      setAgentStreamingMessage(null)
+      setAgentThinkingBySessionId({})
       return
     }
     window.api
-      .listAgents(selectedRepoId)
+      .listAgentSessions(selectedRepoId)
       .then((data) => {
-        setAgents(data)
+        setAgentSessions(data)
         if (data.length === 0) {
-          setActiveAgentId(null)
+          if (activeThreadKind === 'execution') {
+            setActiveAgentSessionId(null)
+          }
           return
         }
-        if (!activeAgentId || !data.find((agent) => agent.id === activeAgentId)) {
-          setActiveAgentId(data[0].id)
+        if (activeThreadKind === 'execution') {
+          if (!activeAgentSessionId || !data.find((session) => session.id === activeAgentSessionId)) {
+            setActiveAgentSessionId(data[0].id)
+          }
         }
       })
-      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load agents.')))
-  }, [selectedRepoId, activeAgentId])
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load agent sessions.')))
+  }, [selectedRepoId, activeAgentSessionId, activeThreadKind])
+
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setAgentRuns([])
+      return
+    }
+    let canceled = false
+    const refreshRuns = (reportError: boolean) => {
+      window.api
+        .listAgentRuns({ repoId: selectedRepoId, limit: 50 })
+        .then((data) => {
+          if (canceled) return
+          setAgentRuns(data)
+        })
+        .catch((error) => {
+          if (reportError && !canceled) {
+            setErrorMessage(getErrorMessage(error, 'Failed to load agent runs.'))
+          }
+        })
+    }
+    refreshRuns(true)
+    const interval = window.setInterval(() => refreshRuns(false), 2500)
+    return () => {
+      canceled = true
+      window.clearInterval(interval)
+    }
+  }, [selectedRepoId])
+
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setLatestAgentEventsByTask({})
+      return
+    }
+    let canceled = false
+    const refreshEvents = (reportError: boolean) => {
+      window.api
+        .listAgentEvents({ repoId: selectedRepoId, limit: 200 })
+        .then((data) => {
+          if (canceled) return
+          const next: Record<number, AgentEvent | undefined> = {}
+          data.forEach((event) => {
+            if (!event.taskId) return
+            if (!next[event.taskId] || next[event.taskId]!.createdAt < event.createdAt) {
+              next[event.taskId] = event
+            }
+          })
+          setLatestAgentEventsByTask(next)
+        })
+        .catch((error) => {
+          if (reportError && !canceled) {
+            setErrorMessage(getErrorMessage(error, 'Failed to load agent activity.'))
+          }
+        })
+    }
+    refreshEvents(true)
+    const interval = window.setInterval(() => refreshEvents(false), 4000)
+    return () => {
+      canceled = true
+      window.clearInterval(interval)
+    }
+  }, [selectedRepoId])
 
   // Planner session list
   useEffect(() => {
@@ -248,134 +458,9 @@ function App() {
       .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load planner threads.')))
   }, [selectedRepoId, activePlannerThreadId])
 
-  // Orchestrator runs
-  useEffect(() => {
-    if (!selectedRepoId) {
-      setOrchestratorRuns([])
-      setActiveOrchestratorRunId(null)
-      return
-    }
-
-    let canceled = false
-    const refreshRuns = (reportError: boolean) => {
-      window.api
-        .listOrchestratorRuns(selectedRepoId)
-        .then((data) => {
-          if (canceled) return
-          setOrchestratorRuns(data)
-          if (data.length > 0 && !data.find((run) => run.id === activeOrchestratorRunId)) {
-            setActiveOrchestratorRunId(data[0].id)
-          }
-        })
-        .catch((error) => {
-          if (reportError && !canceled) {
-            setErrorMessage(getErrorMessage(error, 'Failed to load orchestrator runs.'))
-          }
-        })
-    }
-
-    refreshRuns(true)
-    const interval = window.setInterval(() => refreshRuns(false), orchestratorPollIntervalMs)
-
-    return () => {
-      canceled = true
-      window.clearInterval(interval)
-    }
-  }, [selectedRepoId, activeOrchestratorRunId])
-
-  // Orchestrator task runs
-  useEffect(() => {
-    if (!activeOrchestratorRunId) {
-      setOrchestratorTasks([])
-      return
-    }
-
-    let canceled = false
-    const refreshTasks = (reportError: boolean) => {
-      window.api
-        .listOrchestratorTasks(activeOrchestratorRunId)
-        .then((data) => {
-          if (!canceled) setOrchestratorTasks(data)
-        })
-        .catch((error) => {
-          if (reportError && !canceled) {
-            setErrorMessage(getErrorMessage(error, 'Failed to load orchestrator tasks.'))
-          }
-        })
-    }
-
-    refreshTasks(true)
-    const interval = window.setInterval(() => refreshTasks(false), orchestratorPollIntervalMs)
-
-    return () => {
-      canceled = true
-      window.clearInterval(interval)
-    }
-  }, [activeOrchestratorRunId])
-
-  // Orchestrator run events
-  useEffect(() => {
-    if (!activeOrchestratorRunId) {
-      setOrchestratorEvents([])
-      return
-    }
-
-    let canceled = false
-    const refreshEvents = (reportError: boolean) => {
-      window.api
-        .listOrchestratorEvents(activeOrchestratorRunId)
-        .then((data) => {
-          if (!canceled) setOrchestratorEvents(data)
-        })
-        .catch((error) => {
-          if (reportError && !canceled) {
-            setErrorMessage(getErrorMessage(error, 'Failed to load orchestrator events.'))
-          }
-        })
-    }
-
-    refreshEvents(true)
-    const interval = window.setInterval(() => refreshEvents(false), orchestratorPollIntervalMs)
-
-    return () => {
-      canceled = true
-      window.clearInterval(interval)
-    }
-  }, [activeOrchestratorRunId])
-
-  // Orchestrator validation artifacts
-  useEffect(() => {
-    if (!activeOrchestratorRunId) {
-      setOrchestratorValidationArtifacts([])
-      return
-    }
-
-    let canceled = false
-    const refreshArtifacts = (reportError: boolean) => {
-      window.api
-        .listOrchestratorValidationArtifacts(activeOrchestratorRunId)
-        .then((data) => {
-          if (!canceled) setOrchestratorValidationArtifacts(data)
-        })
-        .catch((error) => {
-          if (reportError && !canceled) {
-            setErrorMessage(getErrorMessage(error, 'Failed to load validation artifacts.'))
-          }
-        })
-    }
-
-    refreshArtifacts(true)
-    const interval = window.setInterval(() => refreshArtifacts(false), orchestratorPollIntervalMs)
-
-    return () => {
-      canceled = true
-      window.clearInterval(interval)
-    }
-  }, [activeOrchestratorRunId])
-
   // Planner messages
   useEffect(() => {
-    if (!activePlannerThreadId) {
+    if (activeThreadKind !== 'planner' || !activePlannerThreadId) {
       setPlannerMessages([])
       return
     }
@@ -383,7 +468,19 @@ function App() {
       .listPlannerMessages(activePlannerThreadId)
       .then(setPlannerMessages)
       .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load planner messages.')))
-  }, [activePlannerThreadId])
+  }, [activePlannerThreadId, activeThreadKind])
+
+  // Agent messages
+  useEffect(() => {
+    if (activeThreadKind !== 'execution' || !activeAgentSessionId) {
+      setAgentMessages([])
+      return
+    }
+    window.api
+      .listAgentMessages(activeAgentSessionId)
+      .then(setAgentMessages)
+      .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to load agent messages.')))
+  }, [activeAgentSessionId, activeThreadKind])
 
   // Planner output
   useEffect(() => {
@@ -445,6 +542,66 @@ function App() {
     }
   }, [activePlannerThreadId])
 
+  // Agent output
+  useEffect(() => {
+    const unsubAgent = window.api.onAgentOutput((data) => {
+      const sessionId = data.sessionId
+      if (data.kind === 'stdout' || data.kind === 'stderr') {
+        if (activeAgentSessionId !== sessionId) return
+        setAgentThinkingBySessionId((prev) => {
+          const current = prev[sessionId]
+          if (!current || current.runId !== data.runId) {
+            return {
+              ...prev,
+              [sessionId]: {
+                runId: data.runId,
+                stderr: data.kind === 'stderr' ? data.text ?? '' : '',
+              },
+            }
+          }
+          if (data.kind !== 'stderr') return prev
+          return {
+            ...prev,
+            [sessionId]: {
+              runId: current.runId,
+              stderr: `${current.stderr}${data.text}`,
+            },
+          }
+        })
+        setAgentStreamingMessage((prev) => {
+          if (!prev || prev.runId !== data.runId) {
+            return {
+              runId: data.runId,
+              stdout: data.kind === 'stdout' ? data.text ?? '' : '',
+              stderr: data.kind === 'stderr' ? data.text ?? '' : '',
+            }
+          }
+          if (data.kind === 'stdout') {
+            return { ...prev, stdout: `${prev.stdout}${data.text ?? ''}` }
+          }
+          return { ...prev, stderr: `${prev.stderr}${data.text ?? ''}` }
+        })
+      } else if (data.kind === 'exit' || data.kind === 'error') {
+        setAgentRunIds((prev) => {
+          const next = { ...prev }
+          if (sessionId in next) delete next[sessionId]
+          return next
+        })
+        if (activeAgentSessionId === sessionId) {
+          setAgentStreamingMessage((prev) => (prev?.runId === data.runId ? null : prev))
+          window.api
+            .listAgentMessages(sessionId)
+            .then(setAgentMessages)
+            .catch((error) => setErrorMessage(getErrorMessage(error, 'Failed to refresh agent messages.')))
+        }
+      }
+    })
+
+    return () => {
+      unsubAgent()
+    }
+  }, [activeAgentSessionId])
+
   // Handlers
   const handlePickRepo = async () => {
     try {
@@ -455,8 +612,9 @@ function App() {
         return
       }
       if (res.repo) {
-        setRepos((prev) => [res.repo, ...prev.filter((r) => r.id !== res.repo.id)])
-        setSelectedRepoId(res.repo.id)
+        const repo = res.repo
+        setRepos((prev) => [repo, ...prev.filter((r) => r.id !== repo.id)])
+        setSelectedRepoId(repo.id)
       }
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to pick repo.'))
@@ -466,8 +624,14 @@ function App() {
   const handleAddTask = async (title: string) => {
     if (!selectedRepo) return
     try {
-      const task = await window.api.addTask({ repoId: selectedRepo.id, title, status: 'backlog' })
+      const task = await window.api.addTask({ repoId: selectedRepo.id, title, status: 'planned' })
       setTasks(prev => [task, ...prev])
+      logAgentEvent({
+        agentId: null,
+        taskId: task.id,
+        kind: 'feature_created',
+        message: `Created feature #${task.id}: ${task.title}`,
+      })
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to add task.'))
     }
@@ -477,6 +641,13 @@ function App() {
     try {
       const task = await window.api.moveTask({ taskId, status })
       setTasks(prev => prev.map(t => t.id === task.id ? task : t))
+      const kind = status === 'executed' ? 'start' : status === 'done' ? 'complete' : 'status'
+      logAgentEvent({
+        agentId: null,
+        taskId: task.id,
+        kind,
+        message: `${status === 'executed' ? 'Started' : 'Moved'} feature #${task.id} to ${task.status.replace('_', ' ')}`,
+      })
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to move task.'))
     }
@@ -493,6 +664,12 @@ function App() {
       if (activeTaskId === taskId) {
         setActiveTaskId(null)
       }
+      logAgentEvent({
+        agentId: null,
+        taskId: task.id,
+        kind: 'feature_deleted',
+        message: `Deleted feature #${task.id}: ${task.title}`,
+      })
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to delete task.'))
     }
@@ -512,107 +689,18 @@ function App() {
     }
   }
 
-  const handleCreateAgent = async (payload: { name: string; provider: Agent['provider']; workspacePath?: string | null }) => {
-    if (!selectedRepo) return
+  const logAgentEvent = async (payload: { agentId?: number | null; taskId?: number | null; kind: string; message: string }) => {
+    if (!selectedRepoId) return
     try {
-      const agent = await window.api.createAgent({
-        repoId: selectedRepo.id,
-        name: payload.name,
-        provider: payload.provider,
-        workspacePath: payload.workspacePath ?? null,
+      await window.api.createAgentEvent({
+        repoId: selectedRepoId,
+        agentId: payload.agentId ?? null,
+        taskId: payload.taskId ?? null,
+        kind: payload.kind,
+        message: payload.message,
       })
-      setAgents((prev) => [agent, ...prev])
-      setActiveAgentId(agent.id)
     } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to create agent.'))
-    }
-  }
-
-  const handleUpdateAgent = async (payload: {
-    agentId: number
-    name?: string
-    provider?: Agent['provider']
-    workspacePath?: string | null
-    status?: Agent['status']
-  }) => {
-    try {
-      const updated = await window.api.updateAgent(payload)
-      setAgents((prev) => prev.map((agent) => (agent.id === updated.id ? updated : agent)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to update agent.'))
-    }
-  }
-
-  const handleDeleteAgent = async (agentId: number) => {
-    const agent = agents.find((item) => item.id === agentId)
-    if (!agent) return
-    const confirmDelete = window.confirm(`Delete "${agent.name}"? This does not remove any worktree data.`)
-    if (!confirmDelete) return
-    try {
-      await window.api.deleteAgent(agentId)
-      setAgents((prev) => prev.filter((item) => item.id !== agentId))
-      setActiveAgentId((prev) => (prev === agentId ? null : prev))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to delete agent.'))
-    }
-  }
-
-  const handleAssignTask = async (taskId: number, agentId: number | null) => {
-    try {
-      const updated = await window.api.assignTask({ taskId, agentId })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to assign task.'))
-    }
-  }
-
-  const handleClaimTask = async (taskId: number) => {
-    if (!activeAgentId) {
-      setNoticeMessage('Select an agent to claim tasks.')
-      setTimeout(() => setNoticeMessage(null), 2500)
-      return
-    }
-    try {
-      const updated = await window.api.claimTask({ taskId, agentId: activeAgentId })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to claim task.'))
-    }
-  }
-
-  const handleReleaseTask = async (taskId: number) => {
-    try {
-      const updated = await window.api.releaseTask({ taskId })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to release task.'))
-    }
-  }
-
-  const handleRequestReview = async (taskId: number) => {
-    try {
-      const updated = await window.api.requestTaskReview({ taskId })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to request review.'))
-    }
-  }
-
-  const handleApproveReview = async (taskId: number, reviewerAgentId?: number | null) => {
-    try {
-      const updated = await window.api.approveTaskReview({ taskId, reviewerAgentId: reviewerAgentId ?? null })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to approve review.'))
-    }
-  }
-
-  const handleRequestChanges = async (taskId: number) => {
-    try {
-      const updated = await window.api.requestTaskChanges({ taskId })
-      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to request changes.'))
+      console.warn('Failed to log agent event', error)
     }
   }
 
@@ -620,8 +708,127 @@ function App() {
     try {
       const validation = await window.api.runTaskValidation(payload)
       setTaskValidations((prev) => [validation, ...prev])
+      setLatestValidationsByTask((prev) => ({ ...prev, [payload.taskId]: validation }))
+      const task = tasks.find((item) => item.id === payload.taskId)
+      const statusLabel = validation.ok ? 'passed' : 'failed'
+      logAgentEvent({
+        agentId: payload.agentId ?? null,
+        taskId: payload.taskId,
+        kind: validation.ok ? 'validation_pass' : 'validation_fail',
+        message: `Validation ${statusLabel} for feature #${payload.taskId}${task ? `: ${task.title}` : ''} · ${validation.command}`,
+      })
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to run validation.'))
+    }
+  }
+
+  const computeSubtaskSummary = (subtasks: Subtask[]) => {
+    return subtasks.reduce(
+      (acc, subtask) => {
+        acc[subtask.status] += 1
+        acc.total += 1
+        return acc
+      },
+      { todo: 0, doing: 0, done: 0, total: 0 }
+    )
+  }
+
+  const handleLoadSubtasks = async (featureId: number) => {
+    try {
+      const data = await window.api.listSubtasks({ featureId })
+      setSubtasksByFeature((prev) => ({ ...prev, [featureId]: data }))
+      setSubtaskSummary((prev) => ({ ...prev, [featureId]: computeSubtaskSummary(data) }))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to load subtasks.'))
+    }
+  }
+
+  const handleAddSubtask = async (featureId: number, title: string) => {
+    try {
+      const current = subtasksByFeature[featureId] ?? []
+      const created = await window.api.addSubtask({
+        featureId,
+        title,
+        status: 'todo',
+        orderIndex: current.length,
+      })
+      const next = [...current, created]
+      setSubtasksByFeature((prev) => ({ ...prev, [featureId]: next }))
+      setSubtaskSummary((prev) => ({ ...prev, [featureId]: computeSubtaskSummary(next) }))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to add subtask.'))
+    }
+  }
+
+  const handleUpdateSubtask = async (subtaskId: number, updates: { title?: string; status?: 'todo' | 'doing' | 'done'; orderIndex?: number | null }) => {
+    try {
+      const updated = await window.api.updateSubtask({ subtaskId, ...updates })
+      setSubtasksByFeature((prev) => {
+        const list = prev[updated.featureId] ?? []
+        const next = list.map((item) => (item.id === updated.id ? updated : item))
+        setSubtaskSummary((prevSummary) => ({ ...prevSummary, [updated.featureId]: computeSubtaskSummary(next) }))
+        return { ...prev, [updated.featureId]: next }
+      })
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to update subtask.'))
+    }
+  }
+
+  const handleDeleteSubtask = async (featureId: number, subtaskId: number) => {
+    try {
+      await window.api.deleteSubtask({ subtaskId })
+      setSubtasksByFeature((prev) => {
+        const list = prev[featureId] ?? []
+        const next = list.filter((item) => item.id !== subtaskId)
+        setSubtaskSummary((prevSummary) => ({ ...prevSummary, [featureId]: computeSubtaskSummary(next) }))
+        return { ...prev, [featureId]: next }
+      })
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to delete subtask.'))
+    }
+  }
+
+  const handleReorderSubtasks = async (featureId: number, orderedIds: number[]) => {
+    try {
+      const next = await window.api.reorderSubtasks({ featureId, orderedIds })
+      setSubtasksByFeature((prev) => ({ ...prev, [featureId]: next }))
+      setSubtaskSummary((prev) => ({ ...prev, [featureId]: computeSubtaskSummary(next) }))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to reorder subtasks.'))
+    }
+  }
+
+  const handleUpdateTaskMetadata = async (payload: {
+    taskId: number
+    baseRef?: string | null
+    worktreePath?: string | null
+    branchName?: string | null
+    needsReview?: boolean
+    planDocPath?: string | null
+  }) => {
+    try {
+      const updated = await window.api.updateTaskMetadata(payload)
+      setTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)))
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to update feature metadata.'))
+    }
+  }
+
+  const handleStartFeatureThread = async (featureId: number, agentKey: AgentSession['agentKey'] = 'codex') => {
+    try {
+      const result = await window.api.startFeatureThread({ taskId: featureId, agentKey })
+      setTasks((prev) => prev.map((item) => (item.id === result.task.id ? result.task : item)))
+      setAgentSessions((prev) => [result.session, ...prev.filter((session) => session.id !== result.session.id)])
+      setActiveThreadKind('execution')
+      setActiveAgentSessionId(result.session.id)
+      setAgentRunIds((prev) => ({ ...prev, [result.session.id]: result.runId }))
+      setAgentStreamingMessage({ runId: result.runId, stdout: '', stderr: '' })
+      const refreshed = await window.api.listAgentMessages(result.session.id)
+      setAgentMessages(refreshed)
+      setNoticeMessage('Feature thread started.')
+      setTimeout(() => setNoticeMessage(null), 2000)
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to start feature thread.'))
     }
   }
 
@@ -636,14 +843,21 @@ function App() {
       })
       setPlannerThreads((prev) => [thread, ...prev])
       setActivePlannerThreadId(thread.id)
+      setActiveThreadKind('planner')
     } catch (error) {
       setErrorMessage(getErrorMessage(error, 'Failed to create planner thread.'))
     }
   }
 
-  const handleSelectPlannerThread = (threadId: number) => {
-    setActivePlannerThreadId(threadId)
-    setPlannerStreamingMessage(null)
+  const handleSelectThread = (kind: ThreadKind, id: number) => {
+    setActiveThreadKind(kind)
+    if (kind === 'planner') {
+      setActivePlannerThreadId(id)
+      setPlannerStreamingMessage(null)
+    } else {
+      setActiveAgentSessionId(id)
+      setAgentStreamingMessage(null)
+    }
   }
 
   const handleDeletePlannerThread = async (threadId: number) => {
@@ -664,8 +878,10 @@ function App() {
         return next
       })
       if (activePlannerThreadId === threadId) {
-        const nextThread = plannerThreads.find((item) => item.id !== threadId)
-        setActivePlannerThreadId(nextThread?.id ?? null)
+        setActivePlannerThreadId(null)
+        if (activeThreadKind === 'planner') {
+          setActiveThreadKind(null)
+        }
       }
       if (result.warning) {
         setNoticeMessage(result.warning)
@@ -712,6 +928,34 @@ function App() {
     }
   }
 
+  const handleSendAgentMessage = async (content: string) => {
+    if (!activeAgentSessionId) return
+    try {
+      const { runId } = await window.api.sendAgentMessage({ sessionId: activeAgentSessionId, content })
+      setAgentRunIds((prev) => ({ ...prev, [activeAgentSessionId]: runId }))
+      setAgentStreamingMessage({ runId, stdout: '', stderr: '' })
+      setAgentThinkingBySessionId((prev) => ({
+        ...prev,
+        [activeAgentSessionId]: {
+          runId,
+          stderr: '',
+        },
+      }))
+      const refreshed = await window.api.listAgentMessages(activeAgentSessionId)
+      setAgentMessages(refreshed)
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to send agent message.'))
+    }
+  }
+
+  const handleSendThreadMessage = async (content: string) => {
+    if (activeThreadKind === 'planner') {
+      await handleSendPlannerMessage(content)
+    } else if (activeThreadKind === 'execution') {
+      await handleSendAgentMessage(content)
+    }
+  }
+
   const handleCancelPlannerRun = async (runId: string) => {
     try {
       await window.api.cancelPlannerRun(runId)
@@ -720,58 +964,58 @@ function App() {
     }
   }
 
-  const handleExtractPlannerTasks = async (message: PlannerMessage) => {
+  const handleCancelAgentRun = async (runId: string) => {
+    try {
+      await window.api.cancelAgentRun(runId)
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, 'Failed to cancel agent run.'))
+    }
+  }
+
+  const handleCancelThreadRun = async (runId: string) => {
+    if (activeThreadKind === 'planner') {
+      await handleCancelPlannerRun(runId)
+    } else if (activeThreadKind === 'execution') {
+      await handleCancelAgentRun(runId)
+    }
+  }
+
+  const handleCreateFeatureFromPlanner = async (message: { threadId: number; content: string }) => {
     if (!selectedRepo) return
-    const parsed = extractTasksFromText(message.content)
-    if (parsed.length === 0) {
-      setNoticeMessage('No JSON tasks found in that response.')
+    const parsed = extractFeaturePlanFromText(message.content)
+    if (!parsed) {
+      setNoticeMessage('No feature JSON found in that response.')
       setTimeout(() => setNoticeMessage(null), 2500)
       return
     }
+    const thread = plannerThreads.find((item) => item.id === message.threadId) ?? null
+    const featureTitle = parsed.featureTitle?.trim() || thread?.title || 'Untitled Feature'
     try {
-      const created = await Promise.all(
-        parsed.map((item) => window.api.addTask({ repoId: selectedRepo.id, title: item.title, status: 'proposed' }))
+      const feature = await window.api.addTask({ repoId: selectedRepo.id, title: featureTitle, status: 'planned' })
+      const createdSubtasks = await Promise.all(
+        parsed.subtasks.map((item, index) =>
+          window.api.addSubtask({
+            featureId: feature.id,
+            title: item.title,
+            status: item.status ?? 'todo',
+            orderIndex: index,
+          })
+        )
       )
-      setTasks((prev) => [...created, ...prev])
-      setNoticeMessage(`Added ${created.length} proposed task${created.length === 1 ? '' : 's'}.`)
-      setTimeout(() => setNoticeMessage(null), 2500)
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to add tasks from planner output.'))
-    }
-  }
-
-  const handleStartOrchestratorRun = async () => {
-    if (!selectedRepo) return
-    try {
-      const payload = {
-        repoId: selectedRepo.id,
-        concurrency: orchestratorConfig.concurrency,
-        maxAttempts: orchestratorConfig.maxAttempts,
-        conflictPolicy: orchestratorConfig.conflictPolicy,
-        baseBranch: orchestratorConfig.baseBranch.trim() || undefined,
-        model: orchestratorConfig.model.trim() || undefined,
-        reasoningEffort: orchestratorConfig.reasoningEffort || undefined,
-        sandbox: orchestratorConfig.sandbox || undefined,
-        approval: orchestratorConfig.approval || undefined,
-        workerValidationCommand: orchestratorConfig.workerValidationCommand.trim() || undefined,
-        integrationValidationCommand: orchestratorConfig.integrationValidationCommand.trim() || undefined,
+      if (thread) {
+        await window.api.updateTaskMetadata({
+          taskId: feature.id,
+          baseRef: thread.baseBranch,
+          worktreePath: thread.worktreePath,
+        })
       }
-      const { runId } = await window.api.startOrchestratorRun(payload)
-      setActiveOrchestratorRunId(runId)
-      setNoticeMessage('Orchestrator run started.')
+      setTasks((prev) => [feature, ...prev])
+      setSubtasksByFeature((prev) => ({ ...prev, [feature.id]: createdSubtasks }))
+      setSubtaskSummary((prev) => ({ ...prev, [feature.id]: computeSubtaskSummary(createdSubtasks) }))
+      setNoticeMessage(`Created feature "${feature.title}" with ${createdSubtasks.length} subtasks.`)
       setTimeout(() => setNoticeMessage(null), 2500)
     } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to start orchestrator run.'))
-    }
-  }
-
-  const handleCancelOrchestratorRun = async (runId: string) => {
-    try {
-      await window.api.cancelOrchestratorRun(runId)
-      setNoticeMessage('Orchestrator run canceled.')
-      setTimeout(() => setNoticeMessage(null), 2500)
-    } catch (error) {
-      setErrorMessage(getErrorMessage(error, 'Failed to cancel orchestrator run.'))
+      setErrorMessage(getErrorMessage(error, 'Failed to create feature from planner output.'))
     }
   }
 
@@ -780,143 +1024,104 @@ function App() {
       errorMessage={errorMessage}
       noticeMessage={noticeMessage}
       topbar={
-        <RepoToolbar
-          repos={repos}
-          selectedRepoId={selectedRepoId}
-          onSelectRepo={setSelectedRepoId}
-          onPickRepo={handlePickRepo}
-        />
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <RepoToolbar
+              repos={repos}
+              selectedRepoId={selectedRepoId}
+              onSelectRepo={setSelectedRepoId}
+              onPickRepo={handlePickRepo}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+            className="flex items-center gap-2 px-3 py-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--panel)] text-[color:var(--text)] text-[11px] font-bold uppercase tracking-widest shadow-sm transition-colors hover:bg-[color:var(--panel-strong)]"
+            aria-pressed={theme === 'dark'}
+            title="Toggle theme"
+          >
+            {theme === 'dark' ? (
+              <>
+                <Sun className="w-4 h-4 text-[color:var(--accent)]" />
+                Light
+              </>
+            ) : (
+              <>
+                <Moon className="w-4 h-4 text-[color:var(--accent)]" />
+                Dark
+              </>
+            )}
+          </button>
+        </div>
       }
       sidebar={
         <ResizableSidebar initialWidth={560} minWidth={420} maxWidth={820} hideDivider={!!activeTaskId}>
-          <div className="flex flex-col h-full min-h-0">
-            <div className="px-4 py-3 border-b border-amber-900/10 bg-white/30 backdrop-blur">
-              <div className="flex items-center gap-2 rounded-2xl bg-amber-900/5 p-1">
-                <button
-                  type="button"
-                  onClick={() => setSidebarView('planner')}
-                  className={cn(
-                    "flex-1 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-xl transition-all",
-                    sidebarView === 'planner'
-                      ? "bg-white text-amber-900 shadow-sm"
-                      : "text-amber-900/50 hover:text-amber-900"
-                  )}
-                >
-                  Planner
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSidebarView('agents')}
-                  className={cn(
-                    "flex-1 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-xl transition-all",
-                    sidebarView === 'agents'
-                      ? "bg-white text-amber-900 shadow-sm"
-                      : "text-amber-900/50 hover:text-amber-900"
-                  )}
-                >
-                  Agents
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSidebarView('orchestrator')}
-                  className={cn(
-                    "flex-1 text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-xl transition-all",
-                    sidebarView === 'orchestrator'
-                      ? "bg-white text-amber-900 shadow-sm"
-                      : "text-amber-900/50 hover:text-amber-900"
-                  )}
-                >
-                  Orchestrator
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 min-h-0">
-              {sidebarView === 'planner' ? (
-                <PlannerPanel
-                  threads={plannerThreads}
-                  activeThread={activePlannerThread}
-                  messages={plannerMessages}
-                  streamingMessage={activePlannerThreadId ? plannerStreamingMessage : null}
-                  thinkingOutput={activePlannerThreadId ? plannerThinkingByThreadId[activePlannerThreadId]?.stderr ?? '' : ''}
-                  thinkingRunId={activePlannerThreadId ? plannerThinkingByThreadId[activePlannerThreadId]?.runId ?? null : null}
-                  activeRunId={activePlannerThreadId ? plannerRunIds[activePlannerThreadId] ?? null : null}
-                  isRepoSelected={!!selectedRepo}
-                  className="h-full rounded-none border-0 shadow-none"
-                  layout="stacked"
-                  onCreateThread={handleCreatePlannerThread}
-                  onSelectThread={handleSelectPlannerThread}
-                  onDeleteThread={handleDeletePlannerThread}
-                  onSendMessage={handleSendPlannerMessage}
-                  onCancelRun={handleCancelPlannerRun}
-                  onUpdateThread={handleUpdatePlannerThread}
-                  onExtractTasks={handleExtractPlannerTasks}
-                />
-              ) : sidebarView === 'agents' ? (
-                <AgentsPanel
-                  agents={agents}
-                  activeAgentId={activeAgentId}
-                  tasks={tasks}
-                  isRepoSelected={!!selectedRepo}
-                  onSelectAgent={setActiveAgentId}
-                  onCreateAgent={handleCreateAgent}
-                  onUpdateAgent={handleUpdateAgent}
-                  onDeleteAgent={handleDeleteAgent}
-                />
-              ) : (
-                <OrchestratorPanel
-                  runs={orchestratorRuns}
-                  activeRun={activeOrchestratorRun}
-                  tasks={orchestratorTasks}
-                  events={orchestratorEvents}
-                  validationArtifacts={orchestratorValidationArtifacts}
-                  config={orchestratorConfig}
-                  isRepoSelected={!!selectedRepo}
-                  className="h-full rounded-none border-0 shadow-none"
-                  onSelectRun={setActiveOrchestratorRunId}
-                  onStartRun={handleStartOrchestratorRun}
-                  onCancelRun={handleCancelOrchestratorRun}
-                  onConfigChange={setOrchestratorConfig}
-                />
-              )}
-            </div>
-          </div>
+          <ThreadsPanel
+            threads={threadItems}
+            activeThread={activeThreadItem}
+            messages={activeThreadMessages}
+            streamingMessage={activeThreadStreaming}
+            thinkingOutput={activeThreadThinking}
+            thinkingRunId={activeThreadThinkingRunId}
+            activeRunId={activeThreadRunId}
+            isRepoSelected={!!selectedRepo}
+            className="h-full rounded-none border-0 shadow-none"
+            layout="stacked"
+            onCreatePlannerThread={handleCreatePlannerThread}
+            onSelectThread={handleSelectThread}
+            onDeletePlannerThread={handleDeletePlannerThread}
+            onSendMessage={handleSendThreadMessage}
+            onCancelRun={handleCancelThreadRun}
+            onUpdatePlannerThread={handleUpdatePlannerThread}
+            onCreateFeature={handleCreateFeatureFromPlanner}
+          />
         </ResizableSidebar>
       }
     >
       <div className="flex flex-col h-full min-h-0">
-        <KanbanBoard
-          tasks={tasks}
-          activeTaskId={activeTaskId}
-          onSelectTask={setActiveTaskId}
-          onMoveTask={handleMoveTask}
-          onAddTask={handleAddTask}
-          onDeleteTask={handleDeleteTask}
+        <FeatureBoard
+          features={tasks.filter((task) => task.status !== 'archived')}
+          activeFeatureId={activeTaskId}
+          onSelectFeature={setActiveTaskId}
+          onMoveFeature={handleMoveTask}
+          onAddFeature={handleAddTask}
+          onDeleteFeature={handleDeleteTask}
           isRepoSelected={!!selectedRepo}
-          agents={agents}
-          activeAgentId={activeAgentId}
-          onClaimTask={handleClaimTask}
+          subtaskSummary={subtaskSummary}
+          subtasksByFeature={subtasksByFeature}
+          onLoadSubtasks={handleLoadSubtasks}
+          latestValidations={latestValidationsByTask}
+          mergeStatusByFeature={mergeStatusByTask}
+          latestEventsByFeature={latestAgentEventsByTask}
+          featureThreads={featureThreadById}
+          runningByFeature={runningByFeature}
+          onStartThread={handleStartFeatureThread}
+          onOpenThread={(sessionId) => handleSelectThread('execution', sessionId)}
         />
       </div>
 
-      <TaskDrawer
-        task={activeTask}
+      <FeatureDrawer
+        feature={activeTask}
         repo={selectedRepo}
         note={taskNote}
         noteStatus={taskNoteStatus}
-        agents={agents}
-        assignedAgent={assignedAgent}
-        activeAgent={activeAgent}
         validations={taskValidations}
+        subtasks={activeTaskId ? subtasksByFeature[activeTaskId] ?? [] : []}
+        mergeStatus={activeTaskId ? mergeStatusByTask[activeTaskId] : undefined}
+        threadInfo={activeFeatureThread}
         onClose={() => setActiveTaskId(null)}
         onNoteChange={setTaskNote}
         onSaveNote={handleSaveNote}
-        onDeleteTask={handleDeleteTask}
-        onAssignAgent={handleAssignTask}
-        onReleaseTask={handleReleaseTask}
-        onRequestReview={handleRequestReview}
-        onApproveReview={handleApproveReview}
-        onRequestChanges={handleRequestChanges}
+        onDeleteFeature={handleDeleteTask}
         onRunValidation={handleRunValidation}
+        onUpdateStatus={handleMoveTask}
+        onAddSubtask={handleAddSubtask}
+        onUpdateSubtask={handleUpdateSubtask}
+        onDeleteSubtask={handleDeleteSubtask}
+        onReorderSubtasks={handleReorderSubtasks}
+        onStartThread={handleStartFeatureThread}
+        onOpenThread={(sessionId) => handleSelectThread('execution', sessionId)}
+        onUpdateMetadata={handleUpdateTaskMetadata}
       />
     </Layout>
   )

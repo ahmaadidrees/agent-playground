@@ -22,17 +22,17 @@ export const TerminalPanel = forwardRef<HTMLDivElement, TerminalPanelProps>(({
   children
 }, ref) => {
   return (
-    <div className={cn("flex flex-col bg-[#110f0b] rounded-3xl border border-white/5 shadow-2xl overflow-hidden min-h-0", className)}>
+    <div className={cn("flex flex-col bg-[color:var(--terminal-bg)] rounded-3xl border border-white/5 shadow-2xl overflow-hidden min-h-0", className)}>
       <div className="flex items-center justify-between px-6 py-4 bg-white/[0.02] border-b border-white/5 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <div className="flex gap-1.5 mr-2">
             <div className="w-3 h-3 rounded-full bg-rose-500/50" />
-            <div className="w-3 h-3 rounded-full bg-amber-500/50" />
+            <div className="w-3 h-3 rounded-full bg-[color:var(--accent-muted)]" />
             <div className="w-3 h-3 rounded-full bg-emerald-500/50" />
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
-              <TerminalIcon className="w-3.5 h-3.5 text-amber-500/80" />
+              <TerminalIcon className="w-3.5 h-3.5 text-[color:var(--accent-dim)]" />
               <span className="text-[11px] font-bold text-white/40 uppercase tracking-[0.15em]">{title}</span>
             </div>
             {subtitle && <span className="text-[10px] text-white/20 font-medium">{subtitle}</span>}

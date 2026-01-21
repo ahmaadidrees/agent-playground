@@ -1,26 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { extractTasksFromText } from './agentParsing'
+import { extractFeaturePlanFromText } from './agentParsing'
 
-describe('extractTasksFromText', () => {
-  it('parses a plain JSON array', () => {
-    const input = JSON.stringify([{ title: 'First task' }, { title: 'Second task' }])
-    expect(extractTasksFromText(input)).toEqual([
-      { title: 'First task' },
-      { title: 'Second task' },
-    ])
+describe('extractFeaturePlanFromText', () => {
+  it('parses a JSON feature plan', () => {
+    const input = JSON.stringify({
+      featureTitle: 'Feature Alpha',
+      subtasks: [{ title: 'First step' }, { title: 'Second step', status: 'doing' }],
+    })
+    expect(extractFeaturePlanFromText(input)).toEqual({
+      featureTitle: 'Feature Alpha',
+      subtasks: [{ title: 'First step', status: undefined }, { title: 'Second step', status: 'doing' }],
+    })
   })
 
   it('extracts JSON from surrounding text', () => {
-    const input = 'Here is the list:\n[{"title":"Ship it"},{"title":"Review"}]\nThanks!'
-    expect(extractTasksFromText(input)).toEqual([{ title: 'Ship it' }, { title: 'Review' }])
+    const input = 'Plan:\n{\"featureTitle\":\"Ship it\",\"subtasks\":[{\"title\":\"Build\"},{\"title\":\"Review\",\"status\":\"done\"}]}\nThanks!'
+    expect(extractFeaturePlanFromText(input)).toEqual({
+      featureTitle: 'Ship it',
+      subtasks: [{ title: 'Build', status: undefined }, { title: 'Review', status: 'done' }],
+    })
   })
 
   it('filters invalid entries', () => {
-    const input = JSON.stringify([{ nope: true }, { title: '' }, { title: 'Valid' }])
-    expect(extractTasksFromText(input)).toEqual([{ title: 'Valid' }])
+    const input = JSON.stringify({ featureTitle: 'Plan', subtasks: [{ nope: true }, { title: '' }, { title: 'Valid' }] })
+    expect(extractFeaturePlanFromText(input)).toEqual({ featureTitle: 'Plan', subtasks: [{ title: 'Valid', status: undefined }] })
   })
 
-  it('returns empty array when no JSON array is found', () => {
-    expect(extractTasksFromText('no tasks here')).toEqual([])
+  it('returns null when no JSON object is found', () => {
+    expect(extractFeaturePlanFromText('no plan here')).toBeNull()
   })
 })

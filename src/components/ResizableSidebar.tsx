@@ -113,7 +113,7 @@ export const ResizableSidebar: React.FC<ResizableSidebarProps> = ({
           hideDivider ? "opacity-0 pointer-events-none" : "opacity-100"
         )}
       >
-        <div className="h-full w-px bg-amber-900/10 mx-auto" />
+        <div className="h-full w-px bg-[color:var(--border)] mx-auto" />
       </div>
     </aside>
   )

@@ -4,7 +4,9 @@ export interface Repo {
   path: string
 }
 
-export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
+export type TaskStatus = 'planned' | 'executed' | 'done' | 'archived'
+export type SubtaskStatus = 'todo' | 'doing' | 'done'
+export type AgentRole = 'worker' | 'validator'
 
 export interface Task {
   id: number
@@ -17,13 +19,30 @@ export interface Task {
   reviewRequestedAt: string | null
   reviewedAt: string | null
   reviewedByAgentId: number | null
+  baseRef: string | null
+  worktreePath: string | null
+  branchName: string | null
+  needsReview: boolean
+  planDocPath: string | null
+}
+
+export interface Subtask {
+  id: number
+  featureId: number
+  title: string
+  status: SubtaskStatus
+  orderIndex: number | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface AgentSession {
   id: number
   repoId: number
+  agentId: number | null
   agentKey: 'claude' | 'gemini' | 'codex'
   taskId: number | null
+  createdAt: string
 }
 
 export interface Agent {
@@ -31,6 +50,7 @@ export interface Agent {
   repoId: number
   name: string
   provider: 'claude' | 'gemini' | 'codex'
+  role: AgentRole
   workspacePath: string | null
   status: 'active' | 'paused'
   createdAt: string
@@ -48,11 +68,41 @@ export interface TaskValidation {
   createdAt: string
 }
 
+export interface AgentEvent {
+  id: number
+  repoId: number
+  agentId: number | null
+  taskId: number | null
+  kind: string
+  message: string
+  createdAt: string
+}
+
 export interface AgentMessage {
   id: number
   sessionId: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  createdAt: string
+}
+
+export interface AgentRunSummary {
+  id: string
+  sessionId: number
+  agentId: number | null
+  taskId: number | null
+  status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  command: string
+  cwd: string
+  startedAt: string
+  endedAt: string | null
+}
+
+export interface AgentRunEvent {
+  id: number
+  runId: string
+  kind: string
+  payload: string
   createdAt: string
 }
 

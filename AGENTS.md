@@ -9,6 +9,8 @@
 - The helper CLI needs environment variables:
   - `AGENT_PLAYGROUND_DB_PATH` (SQLite DB path; default app location is `~/Library/Application Support/agent-playground/agent-playground.sqlite3`)
   - `AGENT_PLAYGROUND_REPO_PATH` (repo path) or `AGENT_PLAYGROUND_REPO_ID`
+- Planner threads run in a worktree, but the DB path + repo ID still point at the main app DB, so `ap.js` writes show up in the Kanban immediately.
+- If you want the planner to populate Kanban automatically, have it call `node scripts/ap.js tasks add` instead of only describing tasks.
 - If the CLI errors about a `better-sqlite3` module version mismatch, run `npm rebuild better-sqlite3`.
 - Plan docs live in `docs/plans/` by default. Use `docs/plans/task-<id>.md` unless specified otherwise.
 - When you draft a plan, include a concise checklist of steps and any risks or assumptions.

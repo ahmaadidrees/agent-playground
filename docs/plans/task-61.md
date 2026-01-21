@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Define animation cues for active/idle/blocked.\n- Implement pulse/halo/tail animations.\n- Sync animation timing with agent updates.\n- Respect reduced motion preference.\n\n## Risks/Assumptions\n- Assumes access to agent event timings.\n- Risk of animation overload impacting clarity.\n

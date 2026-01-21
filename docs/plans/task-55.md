@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Decide on CSS variable strategy for light/dark.\n- Implement theme state (system + user override).\n- Persist preference and apply on startup.\n- Ensure SSR/boot flash is minimized (if applicable).\n\n## Risks/Assumptions\n- Assumes a single theme provider is in use.\n- Risk of theme flash during startup in Electron.\n

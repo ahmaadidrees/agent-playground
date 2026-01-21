@@ -9,7 +9,7 @@ export type Repo = {
   createdAt: string
 }
 
-export type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
+export type TaskStatus = 'planned' | 'executed' | 'done' | 'archived'
 
 export type Task = {
   id: number
@@ -22,6 +22,23 @@ export type Task = {
   reviewRequestedAt: string | null
   reviewedAt: string | null
   reviewedByAgentId: number | null
+  baseRef: string | null
+  worktreePath: string | null
+  branchName: string | null
+  needsReview: boolean
+  planDocPath: string | null
+}
+
+export type SubtaskStatus = 'todo' | 'doing' | 'done'
+
+export type Subtask = {
+  id: number
+  featureId: number
+  title: string
+  status: SubtaskStatus
+  orderIndex: number | null
+  createdAt: string
+  updatedAt: string
 }
 
 export type TaskNote = {
@@ -35,6 +52,7 @@ export type Agent = {
   repoId: number
   name: string
   provider: 'claude' | 'gemini' | 'codex'
+  role: 'worker' | 'validator'
   workspacePath: string | null
   status: 'active' | 'paused'
   createdAt: string
@@ -55,6 +73,7 @@ export type TaskValidation = {
 export type AgentSession = {
   id: number
   repoId: number
+  agentId: number | null
   taskId: number | null
   agentKey: string
   createdAt: string
@@ -71,11 +90,31 @@ export type AgentMessage = {
 export type AgentRun = {
   id: string
   sessionId: number
+  agentId: number | null
+  taskId: number | null
   status: 'running' | 'succeeded' | 'failed' | 'canceled'
   command: string
   cwd: string
   startedAt: string
   endedAt: string | null
+}
+
+export type AgentEvent = {
+  id: number
+  repoId: number
+  agentId: number | null
+  taskId: number | null
+  kind: string
+  message: string
+  createdAt: string
+}
+
+export type AgentRunEvent = {
+  id: number
+  runId: string
+  kind: string
+  payload: string
+  createdAt: string
 }
 
 export type PlannerThread = {
@@ -179,6 +218,11 @@ type TaskRow = {
   review_requested_at: string | null
   reviewed_at: string | null
   reviewed_by_agent_id: number | null
+  base_ref: string | null
+  worktree_path: string | null
+  branch_name: string | null
+  needs_review: number | null
+  plan_doc_path: string | null
 }
 
 type TaskNoteRow = {
@@ -187,11 +231,22 @@ type TaskNoteRow = {
   updated_at: string
 }
 
+type SubtaskRow = {
+  id: number
+  feature_id: number
+  title: string
+  status: SubtaskStatus
+  order_index: number | null
+  created_at: string
+  updated_at: string
+}
+
 type AgentRow = {
   id: number
   repo_id: number
   name: string
   provider: Agent['provider']
+  role: Agent['role']
   workspace_path: string | null
   status: Agent['status']
   created_at: string
@@ -201,6 +256,7 @@ type AgentRow = {
 type AgentSessionRow = {
   id: number
   repo_id: number
+  agent_id: number | null
   task_id: number | null
   agent_key: string
   created_at: string
@@ -222,6 +278,24 @@ type AgentRunRow = {
   cwd: string
   started_at: string
   ended_at: string | null
+}
+
+type AgentEventRow = {
+  id: number
+  repo_id: number
+  agent_id: number | null
+  task_id: number | null
+  kind: string
+  message: string
+  created_at: string
+}
+
+type AgentRunEventRow = {
+  id: number
+  run_id: string
+  kind: string
+  payload: string
+  created_at: string
 }
 
 type PlannerThreadRow = {
@@ -335,6 +409,7 @@ export function initDb() {
       repo_id INTEGER NOT NULL,
       name TEXT NOT NULL,
       provider TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'worker',
       workspace_path TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -346,12 +421,17 @@ export function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       repo_id INTEGER NOT NULL,
       title TEXT NOT NULL,
-      status TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
       assigned_agent_id INTEGER,
       claimed_at TEXT,
       review_requested_at TEXT,
       reviewed_at TEXT,
       reviewed_by_agent_id INTEGER,
+      base_ref TEXT,
+      worktree_path TEXT,
+      branch_name TEXT,
+      needs_review INTEGER NOT NULL DEFAULT 0,
+      plan_doc_path TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE,
       FOREIGN KEY (assigned_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
@@ -364,13 +444,26 @@ export function initDb() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      feature_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'todo',
+      order_index INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (feature_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_subtasks_feature ON subtasks(feature_id, order_index, created_at);
     CREATE TABLE IF NOT EXISTS agent_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       repo_id INTEGER NOT NULL,
+      agent_id INTEGER,
       task_id INTEGER,
       agent_key TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL,
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_agent_sessions_repo ON agent_sessions(repo_id);
@@ -403,6 +496,21 @@ export function initDb() {
       FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(run_id);
+    CREATE TABLE IF NOT EXISTS agent_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id INTEGER NOT NULL,
+      agent_id INTEGER,
+      task_id INTEGER,
+      kind TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_events_repo ON agent_events(repo_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
     CREATE TABLE IF NOT EXISTS planner_threads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       repo_id INTEGER NOT NULL,
@@ -527,8 +635,28 @@ export function initDb() {
   ensureColumn('tasks', 'review_requested_at', 'TEXT')
   ensureColumn('tasks', 'reviewed_at', 'TEXT')
   ensureColumn('tasks', 'reviewed_by_agent_id', 'INTEGER')
+  ensureColumn('tasks', 'base_ref', 'TEXT')
+  ensureColumn('tasks', 'worktree_path', 'TEXT')
+  ensureColumn('tasks', 'branch_name', 'TEXT')
+  ensureColumn('tasks', 'needs_review', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn('tasks', 'plan_doc_path', 'TEXT')
+  ensureColumn('agents', 'role', "TEXT NOT NULL DEFAULT 'worker'")
+  ensureColumn('agent_sessions', 'agent_id', 'INTEGER')
 
   getDb().exec('CREATE INDEX IF NOT EXISTS idx_tasks_assigned_agent ON tasks(assigned_agent_id)')
+
+  // Migrations for feature-first workflow.
+  getDb().exec("DELETE FROM tasks WHERE status = 'proposed'")
+  getDb().exec(
+    `UPDATE tasks
+     SET status = CASE
+       WHEN status IN ('backlog') THEN 'planned'
+       WHEN status IN ('in_progress', 'review', 'blocked', 'failed') THEN 'executed'
+       WHEN status = 'canceled' THEN 'archived'
+       ELSE status
+     END
+     WHERE status NOT IN ('planned', 'executed', 'done', 'archived')`
+  )
 }
 
 function getDb() {
@@ -559,6 +687,11 @@ function mapTask(row: TaskRow): Task {
     reviewRequestedAt: row.review_requested_at,
     reviewedAt: row.reviewed_at,
     reviewedByAgentId: row.reviewed_by_agent_id,
+    baseRef: row.base_ref ?? null,
+    worktreePath: row.worktree_path ?? null,
+    branchName: row.branch_name ?? null,
+    needsReview: Boolean(row.needs_review),
+    planDocPath: row.plan_doc_path ?? null,
   }
 }
 
@@ -570,16 +703,41 @@ function mapTaskNote(row: TaskNoteRow): TaskNote {
   }
 }
 
+function mapSubtask(row: SubtaskRow): Subtask {
+  return {
+    id: row.id,
+    featureId: row.feature_id,
+    title: row.title,
+    status: row.status,
+    orderIndex: row.order_index ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 function mapAgent(row: AgentRow): Agent {
   return {
     id: row.id,
     repoId: row.repo_id,
     name: row.name,
     provider: row.provider,
+    role: row.role,
     workspacePath: row.workspace_path,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function mapAgentEvent(row: AgentEventRow): AgentEvent {
+  return {
+    id: row.id,
+    repoId: row.repo_id,
+    agentId: row.agent_id,
+    taskId: row.task_id,
+    kind: row.kind,
+    message: row.message,
+    createdAt: row.created_at,
   }
 }
 
@@ -600,6 +758,7 @@ function mapAgentSession(row: AgentSessionRow): AgentSession {
   return {
     id: row.id,
     repoId: row.repo_id,
+    agentId: row.agent_id,
     taskId: row.task_id,
     agentKey: row.agent_key,
     createdAt: row.created_at,
@@ -616,15 +775,27 @@ function mapAgentMessage(row: AgentMessageRow): AgentMessage {
   }
 }
 
-function mapAgentRun(row: AgentRunRow): AgentRun {
+function mapAgentRun(row: AgentRunRow & { agent_id?: number | null; task_id?: number | null }): AgentRun {
   return {
     id: row.id,
     sessionId: row.session_id,
+    agentId: row.agent_id ?? null,
+    taskId: row.task_id ?? null,
     status: row.status,
     command: row.command,
     cwd: row.cwd,
     startedAt: row.started_at,
     endedAt: row.ended_at,
+  }
+}
+
+function mapAgentRunEvent(row: AgentRunEventRow): AgentRunEvent {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    kind: row.kind,
+    payload: row.payload,
+    createdAt: row.created_at,
   }
 }
 
@@ -731,14 +902,14 @@ function mapOrchestratorValidationArtifact(row: OrchestratorValidationArtifactRo
 
 export function listRepos(): Repo[] {
   const rows = getDb()
-    .prepare<RepoRow>('SELECT id, name, path, created_at FROM repos ORDER BY created_at DESC')
+    .prepare<unknown[], RepoRow>('SELECT id, name, path, created_at FROM repos ORDER BY created_at DESC')
     .all()
   return rows.map(mapRepo)
 }
 
 export function getRepoById(id: number): Repo | null {
   const row = getDb()
-    .prepare<RepoRow>('SELECT id, name, path, created_at FROM repos WHERE id = ?')
+    .prepare<unknown[], RepoRow>('SELECT id, name, path, created_at FROM repos WHERE id = ?')
     .get(id)
   return row ? mapRepo(row) : null
 }
@@ -751,7 +922,7 @@ export function addRepo(repoPath: string): Repo {
 
   if (info.changes === 0) {
     const existing = getDb()
-      .prepare<RepoRow>('SELECT id, name, path, created_at FROM repos WHERE path = ?')
+      .prepare<unknown[], RepoRow>('SELECT id, name, path, created_at FROM repos WHERE path = ?')
       .get(repoPath)
     if (!existing) {
       throw new Error('Failed to load existing repo')
@@ -760,7 +931,7 @@ export function addRepo(repoPath: string): Repo {
   }
 
   const created = getDb()
-    .prepare<RepoRow>('SELECT id, name, path, created_at FROM repos WHERE id = ?')
+    .prepare<unknown[], RepoRow>('SELECT id, name, path, created_at FROM repos WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!created) {
     throw new Error('Failed to load created repo')
@@ -768,28 +939,25 @@ export function addRepo(repoPath: string): Repo {
   return mapRepo(created)
 }
 
+const taskSelect =
+  'id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id, base_ref, worktree_path, branch_name, needs_review, plan_doc_path'
+
 export function listTasks(repoId?: number): Task[] {
   if (repoId) {
     const rows = getDb()
-      .prepare<TaskRow>(
-        'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE repo_id = ? ORDER BY created_at DESC'
-      )
+      .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE repo_id = ? ORDER BY created_at DESC`)
       .all(repoId)
     return rows.map(mapTask)
   }
   const rows = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks ORDER BY created_at DESC'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks ORDER BY created_at DESC`)
     .all()
   return rows.map(mapTask)
 }
 
 export function getTaskById(taskId: number): Task | null {
   const row = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   return row ? mapTask(row) : null
 }
@@ -799,9 +967,7 @@ export function addTask(repoId: number, title: string, status: TaskStatus): Task
     .prepare('INSERT INTO tasks (repo_id, title, status) VALUES (?, ?, ?)')
     .run(repoId, title, status)
   const created = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(info.lastInsertRowid)
   if (!created) {
     throw new Error('Failed to load created task')
@@ -811,15 +977,22 @@ export function addTask(repoId: number, title: string, status: TaskStatus): Task
 
 export function updateTaskStatus(taskId: number, status: TaskStatus): Task {
   const info = getDb()
-    .prepare('UPDATE tasks SET status = ? WHERE id = ?')
-    .run(status, taskId)
+    .prepare(
+      `UPDATE tasks
+       SET status = ?,
+           needs_review = CASE
+             WHEN ? = 'executed' THEN 1
+             WHEN ? IN ('planned', 'done', 'archived') THEN 0
+             ELSE needs_review
+           END
+       WHERE id = ?`
+    )
+    .run(status, status, status, taskId)
   if (info.changes === 0) {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -839,7 +1012,7 @@ export function deleteTask(taskId: number): { id: number } {
 
 export function getTaskNote(taskId: number): TaskNote | null {
   const row = getDb()
-    .prepare<TaskNoteRow>('SELECT task_id, content, updated_at FROM task_notes WHERE task_id = ?')
+    .prepare<unknown[], TaskNoteRow>('SELECT task_id, content, updated_at FROM task_notes WHERE task_id = ?')
     .get(taskId)
   return row ? mapTaskNote(row) : null
 }
@@ -849,7 +1022,7 @@ export function upsertTaskNote(taskId: number, content: string): TaskNote {
     .prepare('INSERT INTO task_notes (task_id, content, updated_at) VALUES (?, ?, datetime(\'now\')) ON CONFLICT(task_id) DO UPDATE SET content = excluded.content, updated_at = datetime(\'now\')')
     .run(taskId, content)
   const row = getDb()
-    .prepare<TaskNoteRow>('SELECT task_id, content, updated_at FROM task_notes WHERE task_id = ?')
+    .prepare<unknown[], TaskNoteRow>('SELECT task_id, content, updated_at FROM task_notes WHERE task_id = ?')
     .get(taskId)
   if (!row) {
     throw new Error('Failed to load task note')
@@ -857,24 +1030,166 @@ export function upsertTaskNote(taskId: number, content: string): TaskNote {
   return mapTaskNote(row)
 }
 
+export function listSubtasks(featureId: number): Subtask[] {
+  const rows = getDb()
+    .prepare<unknown[], SubtaskRow>(
+      'SELECT id, feature_id, title, status, order_index, created_at, updated_at FROM subtasks WHERE feature_id = ? ORDER BY order_index IS NULL, order_index ASC, created_at ASC, id ASC'
+    )
+    .all(featureId)
+  return rows.map(mapSubtask)
+}
+
+export function addSubtask(input: {
+  featureId: number
+  title: string
+  status?: SubtaskStatus
+  orderIndex?: number | null
+}): Subtask {
+  const status = input.status ?? 'todo'
+  const info = getDb()
+    .prepare('INSERT INTO subtasks (feature_id, title, status, order_index) VALUES (?, ?, ?, ?)')
+    .run(input.featureId, input.title, status, input.orderIndex ?? null)
+  const row = getDb()
+    .prepare<unknown[], SubtaskRow>(
+      'SELECT id, feature_id, title, status, order_index, created_at, updated_at FROM subtasks WHERE id = ?'
+    )
+    .get(info.lastInsertRowid)
+  if (!row) {
+    throw new Error('Failed to load created subtask')
+  }
+  return mapSubtask(row)
+}
+
+export function updateSubtask(subtaskId: number, updates: {
+  title?: string
+  status?: SubtaskStatus
+  orderIndex?: number | null
+}): Subtask {
+  const existing = getDb()
+    .prepare<unknown[], SubtaskRow>('SELECT id, feature_id, title, status, order_index, created_at, updated_at FROM subtasks WHERE id = ?')
+    .get(subtaskId)
+  if (!existing) {
+    throw new Error('Subtask not found')
+  }
+  const next = {
+    title: updates.title ?? existing.title,
+    status: updates.status ?? existing.status,
+    orderIndex: updates.orderIndex ?? existing.order_index,
+  }
+  getDb()
+    .prepare('UPDATE subtasks SET title = ?, status = ?, order_index = ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(next.title, next.status, next.orderIndex, subtaskId)
+  const row = getDb()
+    .prepare<unknown[], SubtaskRow>(
+      'SELECT id, feature_id, title, status, order_index, created_at, updated_at FROM subtasks WHERE id = ?'
+    )
+    .get(subtaskId)
+  if (!row) {
+    throw new Error('Failed to load updated subtask')
+  }
+  return mapSubtask(row)
+}
+
+export function deleteSubtask(subtaskId: number): { id: number } {
+  const info = getDb()
+    .prepare('DELETE FROM subtasks WHERE id = ?')
+    .run(subtaskId)
+  if (info.changes === 0) {
+    throw new Error('Subtask not found')
+  }
+  return { id: subtaskId }
+}
+
+export function reorderSubtasks(featureId: number, orderedIds: number[]): Subtask[] {
+  const existing = getDb()
+    .prepare<unknown[], { id: number }>('SELECT id FROM subtasks WHERE feature_id = ?')
+    .all(featureId)
+  const existingIds = new Set(existing.map((row) => row.id))
+  const sanitized = orderedIds.filter((id) => existingIds.has(id))
+  if (sanitized.length === 0) return listSubtasks(featureId)
+
+  const update = getDb().prepare('UPDATE subtasks SET order_index = ?, updated_at = datetime(\'now\') WHERE id = ?')
+  const transaction = getDb().transaction(() => {
+    sanitized.forEach((id, index) => update.run(index, id))
+  })
+  transaction()
+  return listSubtasks(featureId)
+}
+
+export function listSubtaskSummary(featureIds: number[]): Record<number, { todo: number; doing: number; done: number; total: number }> {
+  if (featureIds.length === 0) return {}
+  const placeholders = featureIds.map(() => '?').join(', ')
+  const rows = getDb()
+    .prepare<unknown[], { feature_id: number; status: SubtaskStatus; count: number }>(
+      `SELECT feature_id, status, COUNT(*) as count
+       FROM subtasks
+       WHERE feature_id IN (${placeholders})
+       GROUP BY feature_id, status`
+    )
+    .all(...featureIds)
+  const summary: Record<number, { todo: number; doing: number; done: number; total: number }> = {}
+  for (const row of rows) {
+    if (!summary[row.feature_id]) {
+      summary[row.feature_id] = { todo: 0, doing: 0, done: 0, total: 0 }
+    }
+    summary[row.feature_id][row.status] = row.count
+    summary[row.feature_id].total += row.count
+  }
+  return summary
+}
+
+export function updateTaskMetadata(taskId: number, updates: {
+  baseRef?: string | null
+  worktreePath?: string | null
+  branchName?: string | null
+  needsReview?: boolean
+  planDocPath?: string | null
+}): Task {
+  const existing = getTaskById(taskId)
+  if (!existing) {
+    throw new Error('Task not found')
+  }
+  const next = {
+    baseRef: updates.baseRef ?? existing.baseRef,
+    worktreePath: updates.worktreePath ?? existing.worktreePath,
+    branchName: updates.branchName ?? existing.branchName,
+    needsReview: typeof updates.needsReview === 'boolean' ? updates.needsReview : existing.needsReview,
+    planDocPath: updates.planDocPath ?? existing.planDocPath,
+  }
+  getDb()
+    .prepare(
+      `UPDATE tasks
+       SET base_ref = ?, worktree_path = ?, branch_name = ?, needs_review = ?, plan_doc_path = ?
+       WHERE id = ?`
+    )
+    .run(next.baseRef ?? null, next.worktreePath ?? null, next.branchName ?? null, next.needsReview ? 1 : 0, next.planDocPath ?? null, taskId)
+  const updated = getDb()
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
+    .get(taskId)
+  if (!updated) {
+    throw new Error('Failed to load updated task')
+  }
+  return mapTask(updated)
+}
+
 export function listAgents(repoId?: number): Agent[] {
   if (repoId) {
     const rows = getDb()
-      .prepare<AgentRow>(
-        'SELECT id, repo_id, name, provider, workspace_path, status, created_at, updated_at FROM agents WHERE repo_id = ? ORDER BY created_at DESC'
+      .prepare<unknown[], AgentRow>(
+        'SELECT id, repo_id, name, provider, role, workspace_path, status, created_at, updated_at FROM agents WHERE repo_id = ? ORDER BY created_at DESC'
       )
       .all(repoId)
     return rows.map(mapAgent)
   }
   const rows = getDb()
-    .prepare<AgentRow>('SELECT id, repo_id, name, provider, workspace_path, status, created_at, updated_at FROM agents ORDER BY created_at DESC')
+    .prepare<unknown[], AgentRow>('SELECT id, repo_id, name, provider, role, workspace_path, status, created_at, updated_at FROM agents ORDER BY created_at DESC')
     .all()
   return rows.map(mapAgent)
 }
 
 export function getAgentById(agentId: number): Agent | null {
   const row = getDb()
-    .prepare<AgentRow>('SELECT id, repo_id, name, provider, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
+    .prepare<unknown[], AgentRow>('SELECT id, repo_id, name, provider, role, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
     .get(agentId)
   return row ? mapAgent(row) : null
 }
@@ -883,14 +1198,15 @@ export function createAgent(input: {
   repoId: number
   name: string
   provider: Agent['provider']
+  role?: Agent['role']
   workspacePath?: string | null
   status?: Agent['status']
 }): Agent {
   const info = getDb()
-    .prepare('INSERT INTO agents (repo_id, name, provider, workspace_path, status) VALUES (?, ?, ?, ?, ?)')
-    .run(input.repoId, input.name, input.provider, input.workspacePath ?? null, input.status ?? 'active')
+    .prepare('INSERT INTO agents (repo_id, name, provider, role, workspace_path, status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(input.repoId, input.name, input.provider, input.role ?? 'worker', input.workspacePath ?? null, input.status ?? 'active')
   const row = getDb()
-    .prepare<AgentRow>('SELECT id, repo_id, name, provider, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
+    .prepare<unknown[], AgentRow>('SELECT id, repo_id, name, provider, role, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!row) {
     throw new Error('Failed to load created agent')
@@ -901,6 +1217,7 @@ export function createAgent(input: {
 export function updateAgent(agentId: number, updates: {
   name?: string
   provider?: Agent['provider']
+  role?: Agent['role']
   workspacePath?: string | null
   status?: Agent['status']
 }): Agent {
@@ -911,14 +1228,15 @@ export function updateAgent(agentId: number, updates: {
   const next = {
     name: updates.name ?? existing.name,
     provider: updates.provider ?? existing.provider,
+    role: updates.role ?? existing.role,
     workspacePath: updates.workspacePath ?? existing.workspacePath,
     status: updates.status ?? existing.status,
   }
   getDb()
-    .prepare('UPDATE agents SET name = ?, provider = ?, workspace_path = ?, status = ?, updated_at = datetime(\'now\') WHERE id = ?')
-    .run(next.name, next.provider, next.workspacePath, next.status, agentId)
+    .prepare('UPDATE agents SET name = ?, provider = ?, role = ?, workspace_path = ?, status = ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(next.name, next.provider, next.role, next.workspacePath, next.status, agentId)
   const row = getDb()
-    .prepare<AgentRow>('SELECT id, repo_id, name, provider, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
+    .prepare<unknown[], AgentRow>('SELECT id, repo_id, name, provider, role, workspace_path, status, created_at, updated_at FROM agents WHERE id = ?')
     .get(agentId)
   if (!row) {
     throw new Error('Failed to load updated agent')
@@ -942,26 +1260,75 @@ export function deleteAgent(agentId: number): { id: number } {
   return { id: agentId }
 }
 
+export function listAgentEvents(filters: {
+  repoId?: number
+  agentId?: number
+  taskId?: number
+  limit?: number
+}): AgentEvent[] {
+  const clauses: string[] = []
+  const params: (number | string)[] = []
+  if (filters.repoId) {
+    clauses.push('repo_id = ?')
+    params.push(filters.repoId)
+  }
+  if (filters.agentId) {
+    clauses.push('agent_id = ?')
+    params.push(filters.agentId)
+  }
+  if (filters.taskId) {
+    clauses.push('task_id = ?')
+    params.push(filters.taskId)
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const limit = typeof filters.limit === 'number' && Number.isFinite(filters.limit)
+    ? Math.max(1, Math.min(filters.limit, 500))
+    : 200
+  const rows = getDb()
+    .prepare<unknown[], AgentEventRow>(
+      `SELECT id, repo_id, agent_id, task_id, kind, message, created_at
+       FROM agent_events
+       ${where}
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`
+    )
+    .all(...params, limit)
+  return rows.map(mapAgentEvent)
+}
+
+export function createAgentEvent(input: {
+  repoId: number
+  agentId?: number | null
+  taskId?: number | null
+  kind: string
+  message: string
+}): AgentEvent {
+  const info = getDb()
+    .prepare('INSERT INTO agent_events (repo_id, agent_id, task_id, kind, message) VALUES (?, ?, ?, ?, ?)')
+    .run(input.repoId, input.agentId ?? null, input.taskId ?? null, input.kind, input.message)
+  const row = getDb()
+    .prepare<unknown[], AgentEventRow>('SELECT id, repo_id, agent_id, task_id, kind, message, created_at FROM agent_events WHERE id = ?')
+    .get(info.lastInsertRowid)
+  if (!row) {
+    throw new Error('Failed to load created agent event')
+  }
+  return mapAgentEvent(row)
+}
+
 export function assignTask(taskId: number, agentId: number | null): Task {
   const info = getDb()
     .prepare(
       `UPDATE tasks
        SET assigned_agent_id = ?,
-           claimed_at = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(claimed_at, datetime('now')) END,
-           status = CASE
-             WHEN ? IS NOT NULL AND status IN ('backlog', 'proposed') THEN 'in_progress'
-             ELSE status
-           END
+           claimed_at = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(claimed_at, datetime('now')) END
        WHERE id = ?`
     )
-    .run(agentId, agentId, agentId, taskId)
+    .run(agentId, agentId, taskId)
   if (info.changes === 0) {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -974,11 +1341,7 @@ export function claimTask(taskId: number, agentId: number): Task {
     .prepare(
       `UPDATE tasks
        SET assigned_agent_id = ?,
-           claimed_at = datetime('now'),
-           status = CASE
-             WHEN status IN ('backlog', 'proposed') THEN 'in_progress'
-             ELSE status
-           END
+           claimed_at = datetime('now')
        WHERE id = ? AND assigned_agent_id IS NULL`
     )
     .run(agentId, taskId)
@@ -986,9 +1349,7 @@ export function claimTask(taskId: number, agentId: number): Task {
     throw new Error('Task already claimed')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -1001,11 +1362,7 @@ export function releaseTask(taskId: number): Task {
     .prepare(
       `UPDATE tasks
        SET assigned_agent_id = NULL,
-           claimed_at = NULL,
-           status = CASE
-             WHEN status = 'in_progress' THEN 'backlog'
-             ELSE status
-           END
+           claimed_at = NULL
        WHERE id = ?`
     )
     .run(taskId)
@@ -1013,9 +1370,7 @@ export function releaseTask(taskId: number): Task {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -1025,15 +1380,13 @@ export function releaseTask(taskId: number): Task {
 
 export function requestTaskReview(taskId: number): Task {
   const info = getDb()
-    .prepare(`UPDATE tasks SET status = 'review', review_requested_at = datetime('now') WHERE id = ?`)
+    .prepare(`UPDATE tasks SET needs_review = 1, review_requested_at = datetime('now') WHERE id = ?`)
     .run(taskId)
   if (info.changes === 0) {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -1043,15 +1396,13 @@ export function requestTaskReview(taskId: number): Task {
 
 export function approveTaskReview(taskId: number, reviewerAgentId?: number | null): Task {
   const info = getDb()
-    .prepare(`UPDATE tasks SET status = 'done', reviewed_at = datetime('now'), reviewed_by_agent_id = ? WHERE id = ?`)
+    .prepare(`UPDATE tasks SET needs_review = 0, reviewed_at = datetime('now'), reviewed_by_agent_id = ? WHERE id = ?`)
     .run(reviewerAgentId ?? null, taskId)
   if (info.changes === 0) {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -1061,15 +1412,13 @@ export function approveTaskReview(taskId: number, reviewerAgentId?: number | nul
 
 export function requestTaskChanges(taskId: number): Task {
   const info = getDb()
-    .prepare(`UPDATE tasks SET status = 'in_progress' WHERE id = ?`)
+    .prepare(`UPDATE tasks SET needs_review = 1 WHERE id = ?`)
     .run(taskId)
   if (info.changes === 0) {
     throw new Error('Task not found')
   }
   const updated = getDb()
-    .prepare<TaskRow>(
-      'SELECT id, repo_id, title, status, created_at, assigned_agent_id, claimed_at, review_requested_at, reviewed_at, reviewed_by_agent_id FROM tasks WHERE id = ?'
-    )
+    .prepare<unknown[], TaskRow>(`SELECT ${taskSelect} FROM tasks WHERE id = ?`)
     .get(taskId)
   if (!updated) {
     throw new Error('Failed to load updated task')
@@ -1080,31 +1429,31 @@ export function requestTaskChanges(taskId: number): Task {
 export function listAgentSessions(repoId?: number): AgentSession[] {
   if (repoId) {
     const rows = getDb()
-      .prepare<AgentSessionRow>(
-        'SELECT id, repo_id, task_id, agent_key, created_at FROM agent_sessions WHERE repo_id = ? ORDER BY created_at DESC'
+      .prepare<unknown[], AgentSessionRow>(
+        'SELECT id, repo_id, agent_id, task_id, agent_key, created_at FROM agent_sessions WHERE repo_id = ? ORDER BY created_at DESC'
       )
       .all(repoId)
     return rows.map(mapAgentSession)
   }
   const rows = getDb()
-    .prepare<AgentSessionRow>('SELECT id, repo_id, task_id, agent_key, created_at FROM agent_sessions ORDER BY created_at DESC')
+    .prepare<unknown[], AgentSessionRow>('SELECT id, repo_id, agent_id, task_id, agent_key, created_at FROM agent_sessions ORDER BY created_at DESC')
     .all()
   return rows.map(mapAgentSession)
 }
 
 export function getAgentSessionById(sessionId: number): AgentSession | null {
   const row = getDb()
-    .prepare<AgentSessionRow>('SELECT id, repo_id, task_id, agent_key, created_at FROM agent_sessions WHERE id = ?')
+    .prepare<unknown[], AgentSessionRow>('SELECT id, repo_id, agent_id, task_id, agent_key, created_at FROM agent_sessions WHERE id = ?')
     .get(sessionId)
   return row ? mapAgentSession(row) : null
 }
 
-export function createAgentSession(repoId: number, agentKey: string, taskId?: number | null): AgentSession {
+export function createAgentSession(repoId: number, agentKey: string, taskId?: number | null, agentId?: number | null): AgentSession {
   const info = getDb()
-    .prepare('INSERT INTO agent_sessions (repo_id, task_id, agent_key) VALUES (?, ?, ?)')
-    .run(repoId, taskId ?? null, agentKey)
+    .prepare('INSERT INTO agent_sessions (repo_id, agent_id, task_id, agent_key) VALUES (?, ?, ?, ?)')
+    .run(repoId, agentId ?? null, taskId ?? null, agentKey)
   const row = getDb()
-    .prepare<AgentSessionRow>('SELECT id, repo_id, task_id, agent_key, created_at FROM agent_sessions WHERE id = ?')
+    .prepare<unknown[], AgentSessionRow>('SELECT id, repo_id, agent_id, task_id, agent_key, created_at FROM agent_sessions WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!row) {
     throw new Error('Failed to load created session')
@@ -1114,7 +1463,7 @@ export function createAgentSession(repoId: number, agentKey: string, taskId?: nu
 
 export function listAgentMessages(sessionId: number): AgentMessage[] {
   const rows = getDb()
-    .prepare<AgentMessageRow>(
+    .prepare<unknown[], AgentMessageRow>(
       'SELECT id, session_id, role, content, created_at FROM agent_messages WHERE session_id = ? ORDER BY created_at ASC'
     )
     .all(sessionId)
@@ -1126,12 +1475,60 @@ export function addAgentMessage(sessionId: number, role: AgentMessage['role'], c
     .prepare('INSERT INTO agent_messages (session_id, role, content) VALUES (?, ?, ?)')
     .run(sessionId, role, content)
   const row = getDb()
-    .prepare<AgentMessageRow>('SELECT id, session_id, role, content, created_at FROM agent_messages WHERE id = ?')
+    .prepare<unknown[], AgentMessageRow>('SELECT id, session_id, role, content, created_at FROM agent_messages WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!row) {
     throw new Error('Failed to load created message')
   }
   return mapAgentMessage(row)
+}
+
+export function listAgentRuns(filters: {
+  repoId?: number
+  agentId?: number
+  taskId?: number
+  limit?: number
+}): AgentRun[] {
+  const clauses: string[] = []
+  const params: (number | string)[] = []
+  if (filters.repoId) {
+    clauses.push('s.repo_id = ?')
+    params.push(filters.repoId)
+  }
+  if (filters.agentId) {
+    clauses.push('s.agent_id = ?')
+    params.push(filters.agentId)
+  }
+  if (filters.taskId) {
+    clauses.push('s.task_id = ?')
+    params.push(filters.taskId)
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  const limit = typeof filters.limit === 'number' && Number.isFinite(filters.limit)
+    ? Math.max(1, Math.min(filters.limit, 200))
+    : 50
+  const rows = getDb()
+    .prepare<unknown[], AgentRunRow & { agent_id: number | null; task_id: number | null }>(
+      `SELECT r.id, r.session_id, r.status, r.command, r.cwd, r.started_at, r.ended_at,
+              s.agent_id, s.task_id
+       FROM agent_runs r
+       JOIN agent_sessions s ON s.id = r.session_id
+       ${where}
+       ORDER BY r.started_at DESC
+       LIMIT ?`
+    )
+    .all(...params, limit)
+  return rows.map(mapAgentRun)
+}
+
+export function listAgentRunEvents(runId: string, limit = 500): AgentRunEvent[] {
+  const safeLimit = Math.max(1, Math.min(limit, 1000))
+  const rows = getDb()
+    .prepare<unknown[], AgentRunEventRow>(
+      'SELECT id, run_id, kind, payload, created_at FROM agent_run_events WHERE run_id = ? ORDER BY id DESC LIMIT ?'
+    )
+    .all(runId, safeLimit)
+  return rows.map(mapAgentRunEvent)
 }
 
 export function createAgentRun(run: {
@@ -1145,7 +1542,7 @@ export function createAgentRun(run: {
     .prepare('INSERT INTO agent_runs (id, session_id, status, command, cwd) VALUES (?, ?, ?, ?, ?)')
     .run(run.id, run.sessionId, run.status, run.command, run.cwd)
   const row = getDb()
-    .prepare<AgentRunRow>('SELECT id, session_id, status, command, cwd, started_at, ended_at FROM agent_runs WHERE id = ?')
+    .prepare<unknown[], AgentRunRow>('SELECT id, session_id, status, command, cwd, started_at, ended_at FROM agent_runs WHERE id = ?')
     .get(run.id)
   if (!row) {
     throw new Error('Failed to load agent run')
@@ -1158,7 +1555,7 @@ export function updateAgentRunStatus(runId: string, status: AgentRun['status']):
     .prepare('UPDATE agent_runs SET status = ?, ended_at = datetime(\'now\') WHERE id = ?')
     .run(status, runId)
   const row = getDb()
-    .prepare<AgentRunRow>('SELECT id, session_id, status, command, cwd, started_at, ended_at FROM agent_runs WHERE id = ?')
+    .prepare<unknown[], AgentRunRow>('SELECT id, session_id, status, command, cwd, started_at, ended_at FROM agent_runs WHERE id = ?')
     .get(runId)
   if (!row) {
     throw new Error('Failed to load agent run')
@@ -1174,10 +1571,28 @@ export function addAgentRunEvent(runId: string, kind: string, payload: string) {
 
 export function listTaskValidations(taskId: number): TaskValidation[] {
   const rows = getDb()
-    .prepare<TaskValidationRow>(
+    .prepare<unknown[], TaskValidationRow>(
       'SELECT id, task_id, agent_id, command, ok, output, cwd, created_at FROM task_validations WHERE task_id = ? ORDER BY created_at DESC, id DESC'
     )
     .all(taskId)
+  return rows.map(mapTaskValidation)
+}
+
+export function listLatestTaskValidations(taskIds: number[]): TaskValidation[] {
+  if (taskIds.length === 0) return []
+  const placeholders = taskIds.map(() => '?').join(', ')
+  const rows = getDb()
+    .prepare<unknown[], TaskValidationRow>(
+      `SELECT id, task_id, agent_id, command, ok, output, cwd, created_at
+       FROM task_validations
+       WHERE id IN (
+         SELECT MAX(id)
+         FROM task_validations
+         WHERE task_id IN (${placeholders})
+         GROUP BY task_id
+       )`
+    )
+    .all(...taskIds)
   return rows.map(mapTaskValidation)
 }
 
@@ -1193,7 +1608,7 @@ export function addTaskValidationRun(input: {
     .prepare('INSERT INTO task_validations (task_id, agent_id, command, ok, output, cwd) VALUES (?, ?, ?, ?, ?, ?)')
     .run(input.taskId, input.agentId ?? null, input.command, input.ok ? 1 : 0, input.output, input.cwd)
   const row = getDb()
-    .prepare<TaskValidationRow>('SELECT id, task_id, agent_id, command, ok, output, cwd, created_at FROM task_validations WHERE id = ?')
+    .prepare<unknown[], TaskValidationRow>('SELECT id, task_id, agent_id, command, ok, output, cwd, created_at FROM task_validations WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!row) {
     throw new Error('Failed to load task validation')
@@ -1204,14 +1619,14 @@ export function addTaskValidationRun(input: {
 export function listPlannerThreads(repoId?: number): PlannerThread[] {
   if (repoId) {
     const rows = getDb()
-      .prepare<PlannerThreadRow>(
+      .prepare<unknown[], PlannerThreadRow>(
         'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE repo_id = ? ORDER BY last_used_at DESC, created_at DESC'
       )
       .all(repoId)
     return rows.map(mapPlannerThread)
   }
   const rows = getDb()
-    .prepare<PlannerThreadRow>(
+    .prepare<unknown[], PlannerThreadRow>(
       'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads ORDER BY last_used_at DESC, created_at DESC'
     )
     .all()
@@ -1220,7 +1635,7 @@ export function listPlannerThreads(repoId?: number): PlannerThread[] {
 
 export function getPlannerThreadById(threadId: number): PlannerThread | null {
   const row = getDb()
-    .prepare<PlannerThreadRow>(
+    .prepare<unknown[], PlannerThreadRow>(
       'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE id = ?'
     )
     .get(threadId)
@@ -1252,7 +1667,7 @@ export function createPlannerThread(input: {
       input.approval ?? null
     )
   const created = getDb()
-    .prepare<PlannerThreadRow>(
+    .prepare<unknown[], PlannerThreadRow>(
       'SELECT id, repo_id, title, worktree_path, base_branch, model, reasoning_effort, sandbox, approval, created_at, updated_at, last_used_at FROM planner_threads WHERE id = ?'
     )
     .get(info.lastInsertRowid)
@@ -1322,7 +1737,7 @@ export function deletePlannerThread(threadId: number): { id: number } {
 
 export function listPlannerMessages(threadId: number): PlannerMessage[] {
   const rows = getDb()
-    .prepare<PlannerMessageRow>(
+    .prepare<unknown[], PlannerMessageRow>(
       'SELECT id, thread_id, role, content, created_at FROM planner_messages WHERE thread_id = ? ORDER BY created_at ASC'
     )
     .all(threadId)
@@ -1337,7 +1752,7 @@ export function addPlannerMessage(threadId: number, role: PlannerMessage['role']
     .prepare('UPDATE planner_threads SET updated_at = datetime(\'now\'), last_used_at = datetime(\'now\') WHERE id = ?')
     .run(threadId)
   const row = getDb()
-    .prepare<PlannerMessageRow>('SELECT id, thread_id, role, content, created_at FROM planner_messages WHERE id = ?')
+    .prepare<unknown[], PlannerMessageRow>('SELECT id, thread_id, role, content, created_at FROM planner_messages WHERE id = ?')
     .get(info.lastInsertRowid)
   if (!row) {
     throw new Error('Failed to load created planner message')
@@ -1356,7 +1771,7 @@ export function createPlannerRun(run: {
     .prepare('INSERT INTO planner_runs (id, thread_id, status, command, cwd) VALUES (?, ?, ?, ?, ?)')
     .run(run.id, run.threadId, run.status, run.command, run.cwd)
   const row = getDb()
-    .prepare<PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
+    .prepare<unknown[], PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
     .get(run.id)
   if (!row) {
     throw new Error('Failed to load planner run')
@@ -1369,7 +1784,7 @@ export function updatePlannerRunStatus(runId: string, status: PlannerRun['status
     .prepare('UPDATE planner_runs SET status = ?, ended_at = datetime(\'now\') WHERE id = ?')
     .run(status, runId)
   const row = getDb()
-    .prepare<PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
+    .prepare<unknown[], PlannerRunRow>('SELECT id, thread_id, status, command, cwd, started_at, ended_at FROM planner_runs WHERE id = ?')
     .get(runId)
   if (!row) {
     throw new Error('Failed to load planner run')
@@ -1394,21 +1809,21 @@ function isTerminalOrchestratorTaskStatus(status: OrchestratorTaskRunStatus) {
 export function listOrchestratorRuns(repoId?: number): OrchestratorRun[] {
   if (repoId) {
     const rows = getDb()
-      .prepare<OrchestratorRunRow>(
+      .prepare<unknown[], OrchestratorRunRow>(
         'SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE repo_id = ? ORDER BY created_at DESC'
       )
       .all(repoId)
     return rows.map(mapOrchestratorRun)
   }
   const rows = getDb()
-    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs ORDER BY created_at DESC')
+    .prepare<unknown[], OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs ORDER BY created_at DESC')
     .all()
   return rows.map(mapOrchestratorRun)
 }
 
 export function getOrchestratorRunById(runId: string): OrchestratorRun | null {
   const row = getDb()
-    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .prepare<unknown[], OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
     .get(runId)
   return row ? mapOrchestratorRun(row) : null
 }
@@ -1424,7 +1839,7 @@ export function createOrchestratorRun(run: {
     .prepare('INSERT INTO orchestrator_runs (id, repo_id, status, config) VALUES (?, ?, ?, ?)')
     .run(run.id, run.repoId, run.status, config)
   const row = getDb()
-    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .prepare<unknown[], OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
     .get(run.id)
   if (!row) {
     throw new Error('Failed to load orchestrator run')
@@ -1447,7 +1862,7 @@ export function updateOrchestratorRunStatus(runId: string, status: OrchestratorR
       .run(status, runId)
   }
   const row = getDb()
-    .prepare<OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
+    .prepare<unknown[], OrchestratorRunRow>('SELECT id, repo_id, status, config, created_at, started_at, ended_at FROM orchestrator_runs WHERE id = ?')
     .get(runId)
   if (!row) {
     throw new Error('Failed to load orchestrator run')
@@ -1463,7 +1878,7 @@ export function addOrchestratorRunEvent(runId: string, kind: string, payload: st
 
 export function listOrchestratorRunEvents(runId: string): OrchestratorRunEvent[] {
   const rows = getDb()
-    .prepare<OrchestratorRunEventRow>(
+    .prepare<unknown[], OrchestratorRunEventRow>(
       'SELECT id, run_id, kind, payload, created_at FROM orchestrator_run_events WHERE run_id = ? ORDER BY created_at ASC, id ASC'
     )
     .all(runId)
@@ -1484,7 +1899,7 @@ export function addOrchestratorValidationArtifact(payload: {
     )
     .run(payload.runId, payload.taskRunId, payload.scope, payload.command, payload.ok ? 1 : 0, payload.output)
   const row = getDb()
-    .prepare<OrchestratorValidationArtifactRow>(
+    .prepare<unknown[], OrchestratorValidationArtifactRow>(
       'SELECT id, run_id, task_run_id, scope, command, ok, output, created_at FROM orchestrator_validation_artifacts WHERE id = ?'
     )
     .get(info.lastInsertRowid)
@@ -1496,7 +1911,7 @@ export function addOrchestratorValidationArtifact(payload: {
 
 export function listOrchestratorValidationArtifacts(runId: string): OrchestratorValidationArtifact[] {
   const rows = getDb()
-    .prepare<OrchestratorValidationArtifactRow>(
+    .prepare<unknown[], OrchestratorValidationArtifactRow>(
       'SELECT id, run_id, task_run_id, scope, command, ok, output, created_at FROM orchestrator_validation_artifacts WHERE run_id = ? ORDER BY created_at DESC, id DESC'
     )
     .all(runId)
@@ -1505,7 +1920,7 @@ export function listOrchestratorValidationArtifacts(runId: string): Orchestrator
 
 export function listOrchestratorTaskRuns(runId: string): OrchestratorTaskRun[] {
   const rows = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE run_id = ? ORDER BY started_at ASC'
     )
     .all(runId)
@@ -1514,7 +1929,7 @@ export function listOrchestratorTaskRuns(runId: string): OrchestratorTaskRun[] {
 
 export function getOrchestratorTaskRunById(taskRunId: string): OrchestratorTaskRun | null {
   const row = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
     )
     .get(taskRunId)
@@ -1548,7 +1963,7 @@ export function createOrchestratorTaskRun(run: {
       run.attempt ?? 1
     )
   const row = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
     )
     .get(run.id)
@@ -1575,7 +1990,7 @@ export function updateOrchestratorTaskRunStatus(taskRunId: string, status: Orche
       .run(status, taskRunId)
   }
   const row = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
     )
     .get(taskRunId)
@@ -1593,7 +2008,7 @@ export function updateOrchestratorTaskRunValidation(
     .prepare('UPDATE orchestrator_task_runs SET validation_status = ? WHERE id = ?')
     .run(validationStatus, taskRunId)
   const row = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
     )
     .get(taskRunId)
@@ -1644,7 +2059,7 @@ export function updateOrchestratorTaskRunDetails(taskRunId: string, payload: {
     .prepare(`UPDATE orchestrator_task_runs SET ${updates.join(', ')} WHERE id = ?`)
     .run(...values)
   const row = getDb()
-    .prepare<OrchestratorTaskRunRow>(
+    .prepare<unknown[], OrchestratorTaskRunRow>(
       'SELECT id, run_id, task_id, planner_thread_id, status, validation_status, worktree_path, branch_name, attempt, started_at, ended_at, error FROM orchestrator_task_runs WHERE id = ?'
     )
     .get(taskRunId)

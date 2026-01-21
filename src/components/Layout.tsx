@@ -12,7 +12,7 @@ interface LayoutProps {
 
 export const Layout: React.FC<LayoutProps> = ({ sidebar, children, errorMessage, noticeMessage, topbar }) => {
   return (
-    <div className="flex h-screen bg-[#fdfaf5] text-amber-950 overflow-hidden font-sans selection:bg-amber-500/30">
+    <div className="flex h-screen bg-transparent text-[color:var(--text)] overflow-hidden font-sans selection:bg-[color:var(--selection)]">
       {/* Sidebar */}
       {sidebar}
 
@@ -45,7 +45,7 @@ export const Layout: React.FC<LayoutProps> = ({ sidebar, children, errorMessage,
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-4 bg-amber-500 text-white rounded-2xl shadow-2xl z-[100]"
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-3 px-6 py-4 bg-[color:var(--accent)] text-[color:var(--accent-contrast)] rounded-2xl shadow-2xl z-[100]"
           >
             <AlertCircle className="w-5 h-5" />
             <span className="text-sm font-bold">{noticeMessage}</span>

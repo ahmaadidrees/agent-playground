@@ -52,7 +52,7 @@ interface PlannerPanelProps {
     sandbox?: string | null
     approval?: string | null
   }) => void
-  onExtractTasks: (message: PlannerMessage) => void
+  onCreateFeature: (message: PlannerMessage) => void
 }
 
 export const PlannerPanel: React.FC<PlannerPanelProps> = ({
@@ -72,7 +72,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
   onSendMessage,
   onCancelRun,
   onUpdateThread,
-  onExtractTasks,
+  onCreateFeature,
 }) => {
   const [input, setInput] = React.useState('')
   const [modelInput, setModelInput] = React.useState(activeThread?.model ?? '')
@@ -127,19 +127,19 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
   const hasStreamingThinking = Boolean(streamingThinking.trim())
 
   return (
-    <div className={cn("flex flex-col h-full bg-white/40 backdrop-blur-xl border border-amber-900/10 rounded-3xl overflow-hidden shadow-xl", className)}>
-      <div className="flex items-center justify-between px-6 py-4 border-b border-amber-900/5 bg-white/20">
+    <div className={cn("flex flex-col h-full bg-[color:var(--panel-soft)] backdrop-blur-xl border border-[color:var(--border)] rounded-3xl overflow-hidden shadow-xl", className)}>
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[color:var(--border-soft)] bg-[color:var(--panel-soft)]">
         <div className="flex items-center gap-3">
-          <MessageSquare className="w-5 h-5 text-amber-600" />
+          <MessageSquare className="w-5 h-5 text-[color:var(--accent)]" />
           <div className="flex flex-col">
-            <span className="font-bold text-amber-950">Planning Agent</span>
-            <span className="text-[11px] text-amber-900/40 font-medium">Headless Codex threads</span>
+            <span className="font-bold text-[color:var(--text-strong)]">Planning Agent</span>
+            <span className="text-[11px] text-[color:var(--text-subtle)] font-medium">Headless Codex threads</span>
           </div>
         </div>
         <button
           onClick={onCreateThread}
           disabled={!isRepoSelected}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[11px] font-bold uppercase tracking-wider hover:bg-amber-600 transition-all shadow-md shadow-amber-500/20 disabled:opacity-40"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[color:var(--accent)] text-[color:var(--accent-contrast)] text-[11px] font-bold uppercase tracking-wider hover:bg-[color:var(--accent-strong)] transition-all shadow-md shadow-accent disabled:opacity-40"
         >
           <PlusCircle className="w-3.5 h-3.5" />
           New Thread
@@ -149,24 +149,24 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
       <div className={cn("flex-1 flex overflow-hidden", isStacked ? "flex-col" : "flex-row")}>
         <div
           className={cn(
-            "bg-amber-900/[0.02] flex flex-col min-h-0",
+            "bg-[color:var(--accent-ghost)] flex flex-col min-h-0",
             isStacked
-              ? "w-full border-b border-amber-900/5 flex-none max-h-[260px]"
-              : "w-72 border-r border-amber-900/5"
+              ? "w-full border-b border-[color:var(--border-soft)] flex-none max-h-[260px]"
+              : "w-72 border-r border-[color:var(--border-soft)]"
           )}
         >
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex flex-col">
-              <span className="text-[10px] font-bold text-amber-900/30 uppercase tracking-[0.2em]">Threads</span>
+              <span className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-[0.2em]">Threads</span>
               {activeThread && (
-                <span className="text-xs font-semibold text-amber-900/60 truncate max-w-[220px]">
+                <span className="text-xs font-semibold text-[color:var(--text-muted)] truncate max-w-[220px]">
                   Active: {activeThread.title}
                 </span>
               )}
             </div>
             <button
               onClick={() => setIsThreadDrawerOpen((prev) => !prev)}
-              className="p-1.5 rounded-lg text-amber-900/40 hover:text-amber-600 hover:bg-amber-100/60 transition-colors"
+              className="p-1.5 rounded-lg text-[color:var(--text-subtle)] hover:text-[color:var(--accent)] hover:bg-[color:var(--accent-ghost)] transition-colors"
               aria-expanded={isThreadDrawerOpen}
               aria-controls="planner-thread-drawer"
             >
@@ -183,7 +183,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
           >
             <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1 custom-scrollbar">
             {threads.length === 0 ? (
-              <div className="px-3 py-6 text-center text-sm text-amber-900/40">
+              <div className="px-3 py-6 text-center text-sm text-[color:var(--text-subtle)]">
                 Create your first planner thread.
               </div>
             ) : (
@@ -199,18 +199,18 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                     className={cn(
                       "group flex items-center justify-between gap-2 p-3 rounded-2xl transition-all text-left",
                       isActive
-                        ? "bg-white border border-amber-900/5 shadow-sm"
-                        : "hover:bg-amber-900/5"
+                        ? "bg-[color:var(--panel-solid)] border border-[color:var(--border-soft)] shadow-sm"
+                        : "hover:bg-[color:var(--accent-faint)]"
                     )}
                   >
                     <div className="flex flex-col gap-1 min-w-0">
-                      <span className={cn("text-xs font-semibold truncate", isActive ? "text-amber-950" : "text-amber-900/60")}>
+                      <span className={cn("text-xs font-semibold truncate", isActive ? "text-[color:var(--text-strong)]" : "text-[color:var(--text-muted)]")}>
                         {thread.title}
                       </span>
-                      <span className="text-[10px] text-amber-900/35 truncate">Base: {thread.baseBranch}</span>
+                      <span className="text-[10px] text-[color:var(--text-faint)] truncate">Base: {thread.baseBranch}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" />}
+                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent)] shadow-[0_0_8px_var(--accent-glow)]" />}
                       <button
                         onClick={(event) => {
                           event.stopPropagation()
@@ -230,10 +230,10 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col min-h-0 relative bg-white/20">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-amber-900/5 bg-white/40">
-            <div className="flex items-center gap-2 text-xs text-amber-900/60 font-semibold">
-              <Sliders className="w-4 h-4 text-amber-500" />
+        <div className="flex-1 flex flex-col min-h-0 relative bg-[color:var(--panel-soft)]">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-[color:var(--border-soft)] bg-[color:var(--panel-muted)]">
+            <div className="flex items-center gap-2 text-xs text-[color:var(--text-muted)] font-semibold">
+              <Sliders className="w-4 h-4 text-[color:var(--accent)]" />
               {activeThread ? 'Thread Settings' : 'Select a thread'}
             </div>
             {activeThread && (
@@ -243,7 +243,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                   onChange={(event) => setModelInput(event.target.value)}
                   onBlur={handleModelBlur}
                   placeholder="Model (default)"
-                  className="px-3 py-1.5 rounded-xl border border-amber-900/10 bg-white text-xs font-semibold text-amber-950 placeholder:text-amber-900/30 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  className="px-3 py-1.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-xs font-semibold text-[color:var(--text-strong)] placeholder:text-[color:var(--text-faint)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                 />
                 <select
                   value={activeThread.reasoningEffort ?? ''}
@@ -253,7 +253,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                       reasoningEffort: event.target.value || null,
                     })
                   }
-                  className="px-2 py-1.5 rounded-xl border border-amber-900/10 bg-white text-xs font-semibold text-amber-900/70 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  className="px-2 py-1.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-xs font-semibold text-[color:var(--text-dim)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                 >
                   {reasoningOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -269,7 +269,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                       sandbox: event.target.value || null,
                     })
                   }
-                  className="px-2 py-1.5 rounded-xl border border-amber-900/10 bg-white text-xs font-semibold text-amber-900/70 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  className="px-2 py-1.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-xs font-semibold text-[color:var(--text-dim)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                 >
                   {sandboxOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -285,7 +285,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                       approval: event.target.value || null,
                     })
                   }
-                  className="px-2 py-1.5 rounded-xl border border-amber-900/10 bg-white text-xs font-semibold text-amber-900/70 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  className="px-2 py-1.5 rounded-xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-xs font-semibold text-[color:var(--text-dim)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                 >
                   {approvalOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -300,11 +300,11 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
           <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 custom-scrollbar">
             {messages.length === 0 && !streamingMessage ? (
               <div className="h-full flex flex-col items-center justify-center text-center gap-4 opacity-40">
-                <div className="w-16 h-16 bg-amber-100 rounded-3xl flex items-center justify-center">
-                  <PlusCircle className="w-8 h-8 text-amber-500" />
+                <div className="w-16 h-16 bg-[color:var(--accent-soft)] rounded-3xl flex items-center justify-center">
+                  <PlusCircle className="w-8 h-8 text-[color:var(--accent)]" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-amber-950">Start planning</h3>
+                  <h3 className="font-bold text-[color:var(--text-strong)]">Start planning</h3>
                   <p className="text-sm font-medium">Open a thread and send your first prompt.</p>
                 </div>
               </div>
@@ -322,15 +322,15 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                           animate={{ opacity: 1, y: 0 }}
                           className="flex gap-4 max-w-[85%] min-w-0 mr-auto"
                         >
-                          <div className="w-8 h-8 rounded-xl bg-white border border-amber-900/10 text-amber-600 flex items-center justify-center flex-shrink-0 shadow-sm">
+                          <div className="w-8 h-8 rounded-xl bg-[color:var(--panel-solid)] border border-[color:var(--border)] text-[color:var(--accent)] flex items-center justify-center flex-shrink-0 shadow-sm">
                             <Bot className="w-4 h-4" />
                           </div>
                           <div className="flex flex-col gap-2 min-w-0">
-                            <div className="rounded-2xl border border-amber-200/60 bg-amber-50/70 shadow-inner max-w-full">
+                            <div className="rounded-2xl border border-[color:var(--accent-soft)] bg-[color:var(--accent-ghost)] shadow-inner max-w-full">
                               <button
                                 type="button"
                                 onClick={() => setIsThinkingOpen((prev) => !prev)}
-                                className="w-full flex items-center justify-between px-4 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-900/50 hover:text-amber-900/70 transition-colors"
+                                className="w-full flex items-center justify-between px-4 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)] hover:text-[color:var(--text-dim)] transition-colors"
                                 aria-expanded={isThinkingOpen}
                                 aria-controls="planner-thinking-panel-persisted"
                               >
@@ -345,7 +345,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                                 )}
                               >
                                 <div className="max-h-64 overflow-y-auto overflow-x-hidden custom-scrollbar">
-                                  <pre className="px-4 pb-4 text-[12px] leading-relaxed font-mono text-amber-900/80 whitespace-pre-wrap break-all">
+                                  <pre className="px-4 pb-4 text-[12px] leading-relaxed font-mono text-[color:var(--text-dim)] whitespace-pre-wrap break-all">
                                     {persistentThinking}
                                   </pre>
                                 </div>
@@ -361,7 +361,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                       >
                         <div className={cn(
                           "w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm",
-                          message.role === 'user' ? "bg-amber-500 text-white" : "bg-white border border-amber-900/10 text-amber-600"
+                          message.role === 'user' ? "bg-[color:var(--accent)] text-[color:var(--accent-contrast)]" : "bg-[color:var(--panel-solid)] border border-[color:var(--border)] text-[color:var(--accent)]"
                         )}>
                           {message.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                         </div>
@@ -369,14 +369,14 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                           <div className={cn(
                             "p-4 rounded-3xl text-sm leading-relaxed shadow-sm",
                             message.role === 'user'
-                              ? "bg-amber-500 text-white rounded-tr-none"
-                              : "bg-white border border-amber-900/5 text-amber-950 rounded-tl-none"
+                              ? "bg-[color:var(--accent)] text-[color:var(--accent-contrast)] rounded-tr-none"
+                              : "bg-[color:var(--panel-solid)] border border-[color:var(--border-soft)] text-[color:var(--text-strong)] rounded-tl-none"
                           )}>
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
                               components={{
-                                pre: (props) => <pre className="bg-amber-950 text-amber-50 p-4 rounded-2xl my-2 overflow-x-auto text-[13px] font-mono" {...props} />,
-                                code: (props) => <code className="bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded-md font-mono text-[12px]" {...props} />,
+                                pre: (props) => <pre className="bg-[color:var(--code-bg)] text-[color:var(--code-text)] p-4 rounded-2xl my-2 overflow-x-auto text-[13px] font-mono" {...props} />,
+                                code: (props) => <code className="bg-[color:var(--accent-soft)] text-[color:var(--text)] px-1.5 py-0.5 rounded-md font-mono text-[12px]" {...props} />,
                               }}
                             >
                               {message.content}
@@ -384,11 +384,11 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                           </div>
                           {message.role === 'assistant' && (
                             <button
-                              onClick={() => onExtractTasks(message)}
-                              className="flex items-center gap-1.5 text-[10px] font-bold text-amber-600 hover:text-amber-700 uppercase tracking-widest pl-1"
+                              onClick={() => onCreateFeature(message)}
+                              className="flex items-center gap-1.5 text-[10px] font-bold text-[color:var(--accent)] hover:text-[color:var(--accent-strong)] uppercase tracking-widest pl-1"
                             >
                               <PlusCircle className="w-3 h-3" />
-                              Extract Tasks
+                              Create Feature
                             </button>
                           )}
                         </div>
@@ -402,28 +402,28 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                     animate={{ opacity: 1, y: 0 }}
                     className="flex gap-4 max-w-[85%] min-w-0 mr-auto"
                   >
-                    <div className="w-8 h-8 rounded-xl bg-white border border-amber-900/10 text-amber-600 flex items-center justify-center flex-shrink-0 shadow-sm">
+                    <div className="w-8 h-8 rounded-xl bg-[color:var(--panel-solid)] border border-[color:var(--border)] text-[color:var(--accent)] flex items-center justify-center flex-shrink-0 shadow-sm">
                       <Bot className="w-4 h-4" />
                     </div>
                     <div className="flex flex-col gap-2 min-w-0">
-                      <div className="p-4 rounded-3xl bg-white border border-amber-900/5 text-amber-950 text-sm leading-relaxed rounded-tl-none shadow-sm">
+                      <div className="p-4 rounded-3xl bg-[color:var(--panel-solid)] border border-[color:var(--border-soft)] text-[color:var(--text-strong)] text-sm leading-relaxed rounded-tl-none shadow-sm">
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
-                            pre: (props) => <pre className="bg-amber-950 text-amber-50 p-4 rounded-2xl my-2 overflow-x-auto text-[13px] font-mono" {...props} />,
-                            code: (props) => <code className="bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded-md font-mono text-[12px]" {...props} />,
+                            pre: (props) => <pre className="bg-[color:var(--code-bg)] text-[color:var(--code-text)] p-4 rounded-2xl my-2 overflow-x-auto text-[13px] font-mono" {...props} />,
+                            code: (props) => <code className="bg-[color:var(--accent-soft)] text-[color:var(--text)] px-1.5 py-0.5 rounded-md font-mono text-[12px]" {...props} />,
                           }}
                         >
                           {streamingMessage.stdout}
                         </ReactMarkdown>
-                        <span className="inline-block w-1.5 h-4 bg-amber-500 ml-1 animate-pulse align-middle" />
+                        <span className="inline-block w-1.5 h-4 bg-[color:var(--accent)] ml-1 animate-pulse align-middle" />
                       </div>
                       {hasStreamingThinking && (
-                        <div className="rounded-2xl border border-amber-200/60 bg-amber-50/70 shadow-inner max-w-full">
+                        <div className="rounded-2xl border border-[color:var(--accent-soft)] bg-[color:var(--accent-ghost)] shadow-inner max-w-full">
                           <button
                             type="button"
                             onClick={() => setIsThinkingOpen((prev) => !prev)}
-                            className="w-full flex items-center justify-between px-4 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-900/50 hover:text-amber-900/70 transition-colors"
+                            className="w-full flex items-center justify-between px-4 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)] hover:text-[color:var(--text-dim)] transition-colors"
                             aria-expanded={isThinkingOpen}
                             aria-controls="planner-thinking-panel"
                           >
@@ -438,7 +438,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                             )}
                           >
                             <div className="max-h-64 overflow-y-auto overflow-x-hidden custom-scrollbar">
-                              <pre className="px-4 pb-4 text-[12px] leading-relaxed font-mono text-amber-900/80 whitespace-pre-wrap break-all">
+                              <pre className="px-4 pb-4 text-[12px] leading-relaxed font-mono text-[color:var(--text-dim)] whitespace-pre-wrap break-all">
                                 {streamingThinking}
                               </pre>
                             </div>
@@ -466,7 +466,7 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                 }}
                 placeholder={activeThread ? "Outline your planning request..." : "Select a thread to plan"}
                 disabled={!activeThread}
-                className="w-full bg-white border border-amber-900/10 rounded-2xl px-6 py-4 pr-32 text-sm focus:outline-none focus:ring-4 focus:ring-amber-500/5 focus:border-amber-500/50 transition-all shadow-sm resize-none min-h-[100px] custom-scrollbar"
+                className="w-full bg-[color:var(--panel-solid)] border border-[color:var(--border)] rounded-2xl px-6 py-4 pr-32 text-sm focus:outline-none focus:ring-4 focus:ring-[color:var(--ring-strong)] focus:border-[color:var(--accent-border)] transition-all shadow-sm resize-none min-h-[100px] custom-scrollbar"
               />
               <div className="absolute right-3 bottom-3 flex items-center gap-2">
                 {activeRunId && (
@@ -482,13 +482,13 @@ export const PlannerPanel: React.FC<PlannerPanelProps> = ({
                 <button
                   type="submit"
                   disabled={!activeThread || !input.trim()}
-                  className="p-2.5 rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-all disabled:opacity-30 disabled:grayscale shadow-lg shadow-amber-500/20"
+                  className="p-2.5 rounded-xl bg-[color:var(--accent)] text-[color:var(--accent-contrast)] hover:bg-[color:var(--accent-strong)] transition-all disabled:opacity-30 disabled:grayscale shadow-lg shadow-accent"
                 >
                   <Send className="w-5 h-5" />
                 </button>
               </div>
             </form>
-            <div className="mt-2 flex items-center justify-center gap-4 text-[10px] font-bold text-amber-900/20 uppercase tracking-[0.2em]">
+            <div className="mt-2 flex items-center justify-center gap-4 text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-[0.2em]">
               <span>Markdown Supported</span>
               <span>•</span>
               <span>Press Enter to Send</span>

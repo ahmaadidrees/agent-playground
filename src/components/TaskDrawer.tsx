@@ -20,9 +20,6 @@ interface TaskDrawerProps {
   onDeleteTask?: (taskId: number) => void
   onAssignAgent: (taskId: number, agentId: number | null) => void
   onReleaseTask: (taskId: number) => void
-  onRequestReview: (taskId: number) => void
-  onApproveReview: (taskId: number, reviewerAgentId?: number | null) => void
-  onRequestChanges: (taskId: number) => void
   onRunValidation: (payload: { taskId: number; command: string; agentId?: number | null }) => void
 }
 
@@ -42,9 +39,6 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
   onDeleteTask,
   onAssignAgent,
   onReleaseTask,
-  onRequestReview,
-  onApproveReview,
-  onRequestChanges,
   onRunValidation,
 }) => {
   const showAgentAction = Boolean(onSendToAgent)
@@ -65,7 +59,7 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-amber-950/20 backdrop-blur-sm z-40"
+            className="fixed inset-0 bg-[color:var(--overlay)] backdrop-blur-sm z-40"
           />
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 20 }}
@@ -76,19 +70,19 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
           >
             <motion.div
               layoutId={`task-${task.id}`}
-              className="w-full max-w-[720px] max-h-[90vh] bg-white rounded-[36px] shadow-2xl flex flex-col overflow-hidden border border-amber-900/10"
+              className="w-full max-w-[720px] max-h-[90vh] bg-[color:var(--panel-solid)] rounded-[36px] shadow-2xl flex flex-col overflow-hidden border border-[color:var(--border)]"
             >
-              <div className="flex items-center justify-between p-8 border-b border-amber-900/5">
+              <div className="flex items-center justify-between p-8 border-b border-[color:var(--border-soft)]">
                 <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-[10px] font-bold text-amber-500 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-[10px] font-bold text-[color:var(--accent)] uppercase tracking-widest">
                     <Hash className="w-3 h-3" />
                     <span>Task-{task.id}</span>
                   </div>
-                  <h2 className="text-xl font-bold text-amber-950 leading-tight pr-8">{task.title}</h2>
+                  <h2 className="text-xl font-bold text-[color:var(--text-strong)] leading-tight pr-8">{task.title}</h2>
                 </div>
                 <button
                   onClick={onClose}
-                  className="p-2.5 rounded-2xl bg-amber-50 text-amber-900/40 hover:text-amber-600 transition-all hover:rotate-90"
+                  className="p-2.5 rounded-2xl bg-[color:var(--accent-ghost)] text-[color:var(--text-subtle)] hover:text-[color:var(--accent)] transition-all hover:rotate-90"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -97,23 +91,23 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
               <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
                 <div className="flex flex-col gap-8">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="p-4 rounded-3xl bg-amber-50/50 border border-amber-900/5 flex flex-col gap-1">
-                      <span className="text-[10px] font-bold text-amber-900/30 uppercase tracking-wider flex items-center gap-1.5">
+                    <div className="p-4 rounded-3xl bg-[color:var(--accent-ghost)] border border-[color:var(--border-soft)] flex flex-col gap-1">
+                      <span className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-wider flex items-center gap-1.5">
                         <Tag className="w-3 h-3" /> Status
                       </span>
-                      <span className="text-sm font-bold text-amber-900/80 capitalize">{task.status.replace('_', ' ')}</span>
+                      <span className="text-sm font-bold text-[color:var(--text-dim)] capitalize">{task.status.replace('_', ' ')}</span>
                     </div>
-                    <div className="p-4 rounded-3xl bg-amber-50/50 border border-amber-900/5 flex flex-col gap-1">
-                      <span className="text-[10px] font-bold text-amber-900/30 uppercase tracking-wider flex items-center gap-1.5">
+                    <div className="p-4 rounded-3xl bg-[color:var(--accent-ghost)] border border-[color:var(--border-soft)] flex flex-col gap-1">
+                      <span className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-wider flex items-center gap-1.5">
                         <Calendar className="w-3 h-3" /> Created
                       </span>
-                      <span className="text-sm font-bold text-amber-900/80">{new Date(task.createdAt).toLocaleDateString()}</span>
+                      <span className="text-sm font-bold text-[color:var(--text-dim)]">{new Date(task.createdAt).toLocaleDateString()}</span>
                     </div>
                   </div>
 
-                  <div className="p-5 rounded-3xl bg-white/80 border border-amber-900/10 shadow-sm flex flex-col gap-4">
+                  <div className="p-5 rounded-3xl bg-[color:var(--panel-strong)] border border-[color:var(--border)] shadow-sm flex flex-col gap-4">
                     <div className="flex items-center justify-between">
-                      <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Assignment</div>
+                      <div className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-widest">Assignment</div>
                       {task.assignedAgentId && (
                         <button
                           onClick={() => onReleaseTask(task.id)}
@@ -124,14 +118,14 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                       )}
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="text-[11px] font-semibold text-amber-900/60">Assignee</label>
+                      <label className="text-[11px] font-semibold text-[color:var(--text-muted)]">Assignee</label>
                       <select
                         value={task.assignedAgentId ?? ''}
                         onChange={(event) => {
                           const value = event.target.value
                           onAssignAgent(task.id, value ? Number(value) : null)
                         }}
-                        className="px-3 py-2 rounded-2xl border border-amber-900/10 bg-white text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        className="px-3 py-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-sm text-[color:var(--text-strong)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                       >
                         <option value="">Unassigned</option>
                         {agents.map((agent) => (
@@ -141,61 +135,32 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                         ))}
                       </select>
                       {assignedAgent ? (
-                        <div className="text-[11px] text-amber-900/50">
-                          Claimed {task.claimedAt ? new Date(task.claimedAt).toLocaleString() : '—'} · {assignedAgent.workspacePath || 'No workspace set'}
+                        <div className="text-[11px] text-[color:var(--text-muted)]">
+                          Queued {task.claimedAt ? new Date(task.claimedAt).toLocaleString() : '—'} · {assignedAgent.workspacePath || 'No workspace set'}
                         </div>
                       ) : (
-                        <div className="text-[11px] text-amber-900/40">Select an agent to claim this task.</div>
+                        <div className="text-[11px] text-[color:var(--text-subtle)]">Select an agent to queue this task.</div>
                       )}
                     </div>
                   </div>
 
-                  <div className="p-5 rounded-3xl bg-amber-50/40 border border-amber-900/10 flex flex-col gap-3">
-                    <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Review Flow</div>
-                    {task.status === 'in_progress' && (
-                      <button
-                        onClick={() => onRequestReview(task.id)}
-                        className="px-4 py-2 rounded-2xl bg-amber-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-amber-500/20"
-                      >
-                        Request Review
-                      </button>
-                    )}
-                    {task.status === 'review' && (
-                      <div className="flex flex-wrap items-center gap-3">
-                        <button
-                          onClick={() => onApproveReview(task.id, reviewerAgentId)}
-                          className="px-4 py-2 rounded-2xl bg-emerald-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-emerald-500/20"
-                        >
-                          Approve &amp; Done
-                        </button>
-                        <button
-                          onClick={() => onRequestChanges(task.id)}
-                          className="px-4 py-2 rounded-2xl bg-rose-500/10 text-rose-600 text-xs font-bold uppercase tracking-widest"
-                        >
-                          Needs Changes
-                        </button>
-                        <div className="text-[11px] text-amber-900/50">
-                          Reviewer: {activeAgent?.name ?? assignedAgent?.name ?? 'Unassigned'} · Requested {task.reviewRequestedAt ? new Date(task.reviewRequestedAt).toLocaleString() : '—'}
-                        </div>
-                      </div>
-                    )}
-                    {task.status !== 'in_progress' && task.status !== 'review' && (
-                      <div className="text-[11px] text-amber-900/40">
-                        Move the task to in progress to request a review.
-                      </div>
-                    )}
+                  <div className="p-5 rounded-3xl bg-[color:var(--accent-ghost)] border border-[color:var(--border)] flex flex-col gap-3">
+                    <div className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-widest">Review Flow</div>
+                    <div className="text-[11px] text-[color:var(--text-subtle)]">
+                      Review indicators are handled in the feature-first workflow. Use the feature drawer to toggle review needs.
+                    </div>
                   </div>
 
-                  <div className="p-5 rounded-3xl bg-white/80 border border-amber-900/10 shadow-sm flex flex-col gap-4">
-                    <div className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest">Validation</div>
+                  <div className="p-5 rounded-3xl bg-[color:var(--panel-strong)] border border-[color:var(--border)] shadow-sm flex flex-col gap-4">
+                    <div className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-widest">Validation</div>
                     <div className="flex flex-col gap-2">
-                      <label className="text-[11px] font-semibold text-amber-900/60">Command</label>
+                      <label className="text-[11px] font-semibold text-[color:var(--text-muted)]">Command</label>
                       <div className="flex flex-col gap-2 md:flex-row md:items-center">
                         <input
                           value={validationCommand}
                           onChange={(event) => setValidationCommand(event.target.value)}
                           placeholder="npm test"
-                          className="flex-1 px-3 py-2 rounded-2xl border border-amber-900/10 bg-white text-sm text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                          className="flex-1 px-3 py-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--panel-solid)] text-sm text-[color:var(--text-strong)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
                         />
                         <button
                           onClick={() => {
@@ -204,12 +169,12 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                             onRunValidation({ taskId: task.id, command: trimmed, agentId: reviewerAgentId })
                           }}
                           disabled={!validationCommand.trim()}
-                          className="px-4 py-2 rounded-2xl bg-amber-500 text-white text-xs font-bold uppercase tracking-widest shadow-md shadow-amber-500/20 disabled:opacity-40"
+                          className="px-4 py-2 rounded-2xl bg-[color:var(--accent)] text-[color:var(--accent-contrast)] text-xs font-bold uppercase tracking-widest shadow-md shadow-accent disabled:opacity-40"
                         >
                           Run
                         </button>
                       </div>
-                      <div className="text-[11px] text-amber-900/40">
+                      <div className="text-[11px] text-[color:var(--text-subtle)]">
                         Runs in {activeAgent?.workspacePath || assignedAgent?.workspacePath || repo?.path || 'repo workspace'}.
                       </div>
                     </div>
@@ -232,23 +197,23 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                         ))}
                       </div>
                     ) : (
-                      <div className="text-[11px] text-amber-900/40">No validations run yet.</div>
+                      <div className="text-[11px] text-[color:var(--text-subtle)]">No validations run yet.</div>
                     )}
                   </div>
 
                   <div className="flex flex-col gap-3">
-                    <label className="text-[10px] font-bold text-amber-900/30 uppercase tracking-widest px-1">Implementation Notes</label>
+                    <label className="text-[10px] font-bold text-[color:var(--text-faint)] uppercase tracking-widest px-1">Implementation Notes</label>
                     <textarea
                       value={note}
                       onChange={(e) => onNoteChange(e.target.value)}
                       placeholder="Describe implementation details, acceptance criteria, or technical constraints..."
-                      className="w-full min-h-[300px] bg-amber-50/30 border border-amber-900/10 rounded-[32px] p-6 text-sm text-amber-950 focus:outline-none focus:ring-4 focus:ring-amber-500/5 focus:border-amber-500/50 transition-all resize-none shadow-inner"
+                      className="w-full min-h-[300px] bg-[color:var(--accent-ghost)] border border-[color:var(--border)] rounded-[32px] p-6 text-sm text-[color:var(--text-strong)] focus:outline-none focus:ring-4 focus:ring-[color:var(--ring-strong)] focus:border-[color:var(--accent-border)] transition-all resize-none shadow-inner"
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="p-8 bg-amber-50/50 border-t border-amber-900/5 flex items-center gap-3">
+              <div className="p-8 bg-[color:var(--accent-ghost)] border-t border-[color:var(--border-soft)] flex items-center gap-3">
                 {showDeleteAction && (
                   <button
                     onClick={() => onDeleteTask?.(task.id)}
@@ -262,10 +227,10 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                   onClick={onSaveNote}
                   disabled={noteStatus === 'saving'}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-2 py-4 rounded-3xl font-bold text-sm transition-all shadow-lg shadow-amber-500/10",
+                    "flex-1 flex items-center justify-center gap-2 py-4 rounded-3xl font-bold text-sm transition-all shadow-lg shadow-accent",
                     noteStatus === 'saved' 
                       ? "bg-emerald-500 text-white" 
-                      : "bg-amber-500 text-white hover:bg-amber-600"
+                      : "bg-[color:var(--accent)] text-[color:var(--accent-contrast)] hover:bg-[color:var(--accent-strong)]"
                   )}
                 >
                   <Save className="w-4 h-4" />
@@ -274,7 +239,7 @@ export const TaskDrawer: React.FC<TaskDrawerProps> = ({
                 {showAgentAction && (
                   <button
                     onClick={() => onSendToAgent?.(task.id)}
-                    className="flex items-center gap-2 px-6 py-4 rounded-3xl bg-white border border-amber-900/10 text-amber-600 font-bold text-sm hover:bg-amber-50 transition-all shadow-sm"
+                    className="flex items-center gap-2 px-6 py-4 rounded-3xl bg-[color:var(--panel-solid)] border border-[color:var(--border)] text-[color:var(--accent)] font-bold text-sm hover:bg-[color:var(--accent-ghost)] transition-all shadow-sm"
                   >
                     <MessageSquare className="w-4 h-4" />
                     Agent

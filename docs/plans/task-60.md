@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Implement agent nodes with geometry + materials.\n- Map status to color/emissive/scale.\n- Add simple lighting and background.\n- Verify performance with representative counts.\n\n## Risks/Assumptions\n- Assumes GPU budget is acceptable on target machines.\n- Risk of overdraw with many nodes.\n

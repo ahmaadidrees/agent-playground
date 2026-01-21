@@ -17,23 +17,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onPickRepo,
 }) => {
   return (
-    <aside className="flex flex-col w-72 bg-white/50 backdrop-blur-xl border-r border-amber-900/10 h-full p-6 gap-8">
+    <aside className="flex flex-col w-72 bg-[color:var(--panel-soft)] backdrop-blur-xl border-r border-[color:var(--border)] h-full p-6 gap-8">
       <div className="flex items-center justify-between px-2">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center shadow-lg shadow-amber-500/20">
-            <Activity className="w-5 h-5 text-white" />
+          <div className="w-8 h-8 bg-[color:var(--accent)] rounded-lg flex items-center justify-center shadow-lg shadow-accent">
+            <Activity className="w-5 h-5 text-[color:var(--accent-contrast)]" />
           </div>
-          <span className="font-bold text-amber-950 tracking-tight">Agent Playground</span>
+          <span className="font-bold text-[color:var(--text-strong)] tracking-tight">Agent Playground</span>
         </div>
       </div>
 
       <div className="flex flex-col gap-6 flex-1 overflow-hidden">
         <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between px-2 text-xs font-semibold uppercase tracking-wider text-amber-900/40">
+          <div className="flex items-center justify-between px-2 text-xs font-semibold uppercase tracking-wider text-[color:var(--text-subtle)]">
             <span>Repositories</span>
             <button
               onClick={onPickRepo}
-              className="p-1 hover:bg-amber-100 rounded-md transition-colors text-amber-600"
+              className="p-1 hover:bg-[color:var(--accent-ghost)] rounded-md transition-colors text-[color:var(--accent)]"
               title="Add repository"
             >
               <Plus className="w-4 h-4" />
@@ -41,7 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <div className="flex flex-col gap-1 overflow-y-auto max-h-[400px] pr-2 custom-scrollbar">
             {repos.length === 0 ? (
-              <div className="px-3 py-4 text-sm text-amber-900/40 bg-amber-50/50 rounded-xl border border-dashed border-amber-200 text-center">
+              <div className="px-3 py-4 text-sm text-[color:var(--text-subtle)] bg-[color:var(--accent-ghost)] rounded-xl border border-dashed border-[color:var(--accent-soft)] text-center">
                 No repos attached
               </div>
             ) : (
@@ -52,12 +52,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className={cn(
                     "group flex flex-col gap-1 p-3 rounded-xl transition-all text-left border",
                     selectedRepoId === repo.id
-                      ? "bg-amber-500/10 border-amber-500/30 text-amber-950 shadow-sm"
-                      : "bg-transparent border-transparent text-amber-900/60 hover:bg-amber-50 hover:border-amber-200"
+                      ? "bg-[color:var(--accent-faint)] border-[color:var(--accent-border)] text-[color:var(--text-strong)] shadow-sm"
+                      : "bg-transparent border-transparent text-[color:var(--text-muted)] hover:bg-[color:var(--accent-ghost)] hover:border-[color:var(--accent-soft)]"
                   )}
                 >
                   <div className="flex items-center gap-2">
-                    <FolderCode className={cn("w-4 h-4", selectedRepoId === repo.id ? "text-amber-600" : "text-amber-400")} />
+                    <FolderCode className={cn("w-4 h-4", selectedRepoId === repo.id ? "text-[color:var(--accent)]" : "text-[color:var(--accent-bright)]")} />
                     <span className="font-semibold text-sm truncate">{repo.name}</span>
                   </div>
                   <span className="text-[10px] opacity-60 truncate pl-6">{repo.path}</span>
@@ -68,11 +68,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         <div className="mt-auto flex flex-col gap-1">
-          <button className="flex items-center gap-3 p-3 rounded-xl text-amber-900/60 hover:bg-amber-50 hover:text-amber-950 transition-all text-sm font-medium">
+          <button className="flex items-center gap-3 p-3 rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-ghost)] hover:text-[color:var(--text-strong)] transition-all text-sm font-medium">
             <Database className="w-4 h-4" />
             <span>Database</span>
           </button>
-          <button className="flex items-center gap-3 p-3 rounded-xl text-amber-900/60 hover:bg-amber-50 hover:text-amber-950 transition-all text-sm font-medium">
+          <button className="flex items-center gap-3 p-3 rounded-xl text-[color:var(--text-muted)] hover:bg-[color:var(--accent-ghost)] hover:text-[color:var(--text-strong)] transition-all text-sm font-medium">
             <Settings className="w-4 h-4" />
             <span>Settings</span>
           </button>

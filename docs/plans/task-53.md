@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Replace primary/secondary tokens with teal/aqua values.\n- Update derived tokens (hover, focus, gradients).\n- Verify contrast ratios in light mode.\n- Document new palette values in theme file.\n\n## Risks/Assumptions\n- Assumes tokens exist for most UI colors.\n- Risk of charts/visualizations needing separate palettes.\n

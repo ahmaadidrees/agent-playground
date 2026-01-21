@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Create dark palette aligned with teal/aqua accents.\n- Tune surfaces, borders, and text contrast.\n- Verify readable charts and status colors.\n- Validate contrast in key panels and modals.\n\n## Risks/Assumptions\n- Assumes current UI density works in dark mode.\n- Risk of reduced legibility in dense tables.\n

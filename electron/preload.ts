@@ -8,12 +8,12 @@ contextBridge.exposeInMainWorld('api', {
   addTask: (payload: {
     repoId: number
     title: string
-    status: 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
+    status: 'planned' | 'executed' | 'done' | 'archived'
   }) =>
     ipcRenderer.invoke('tasks:add', payload),
   moveTask: (payload: {
     taskId: number
-    status: 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
+    status: 'planned' | 'executed' | 'done' | 'archived'
   }) =>
     ipcRenderer.invoke('tasks:move', payload),
   assignTask: (payload: { taskId: number; agentId: number | null }) => ipcRenderer.invoke('tasks:assign', payload),
@@ -29,25 +29,53 @@ contextBridge.exposeInMainWorld('api', {
   deleteTask: (taskId: number) => ipcRenderer.invoke('tasks:delete', taskId),
   getTaskNote: (taskId: number) => ipcRenderer.invoke('tasks:note:get', taskId),
   saveTaskNote: (payload: { taskId: number; content: string }) => ipcRenderer.invoke('tasks:note:save', payload),
+  updateTaskMetadata: (payload: {
+    taskId: number
+    baseRef?: string | null
+    worktreePath?: string | null
+    branchName?: string | null
+    needsReview?: boolean
+    planDocPath?: string | null
+  }) => ipcRenderer.invoke('tasks:metadata:update', payload),
+  listLatestTaskValidations: (payload: { taskIds: number[] }) => ipcRenderer.invoke('tasks:validations:latest', payload),
+  getTaskMergeStatus: (payload: { taskId: number }) => ipcRenderer.invoke('tasks:merge:status', payload),
   getDbPath: () => ipcRenderer.invoke('app:db:path'),
   listAgents: (repoId?: number) => ipcRenderer.invoke('agents:list', repoId),
-  createAgent: (payload: { repoId: number; name: string; provider: 'claude' | 'gemini' | 'codex'; workspacePath?: string | null }) =>
+  createAgent: (payload: { repoId: number; name: string; provider: 'claude' | 'gemini' | 'codex'; role?: 'worker' | 'validator'; workspacePath?: string | null }) =>
     ipcRenderer.invoke('agents:create', payload),
   updateAgent: (payload: {
     agentId: number
     name?: string
     provider?: 'claude' | 'gemini' | 'codex'
+    role?: 'worker' | 'validator'
     workspacePath?: string | null
     status?: 'active' | 'paused'
   }) => ipcRenderer.invoke('agents:update', payload),
   deleteAgent: (agentId: number) => ipcRenderer.invoke('agents:delete', agentId),
+  listAgentEvents: (payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) =>
+    ipcRenderer.invoke('agents:events:list', payload),
+  createAgentEvent: (payload: {
+    repoId: number
+    agentId?: number | null
+    taskId?: number | null
+    kind: string
+    message: string
+  }) => ipcRenderer.invoke('agents:events:add', payload),
   listAgentSessions: (repoId?: number) => ipcRenderer.invoke('agents:sessions:list', repoId),
-  createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null }) =>
+  createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null; agentId?: number | null }) =>
     ipcRenderer.invoke('agents:sessions:create', payload),
   listAgentMessages: (sessionId: number) => ipcRenderer.invoke('agents:messages:list', sessionId),
   sendAgentMessage: (payload: { sessionId: number; content: string }) =>
     ipcRenderer.invoke('agents:message:send', payload),
   cancelAgentRun: (runId: string) => ipcRenderer.invoke('agents:run:cancel', runId),
+  listAgentRuns: (payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) =>
+    ipcRenderer.invoke('agents:runs:list', payload),
+  listAgentRunEvents: (payload: { runId: string; limit?: number }) =>
+    ipcRenderer.invoke('agents:runs:events', payload),
+  startAgentTaskRun: (payload: { taskId: number; agentId: number; message?: string }) =>
+    ipcRenderer.invoke('agents:task:start', payload),
+  startFeatureThread: (payload: { taskId: number; agentKey?: 'claude' | 'gemini' | 'codex'; message?: string }) =>
+    ipcRenderer.invoke('agents:feature:start', payload),
   listPlannerThreads: (repoId?: number) => ipcRenderer.invoke('planner:threads:list', repoId),
   createPlannerThread: (payload: {
     repoId: number
@@ -71,6 +99,14 @@ contextBridge.exposeInMainWorld('api', {
   sendPlannerMessage: (payload: { threadId: number; content: string }) =>
     ipcRenderer.invoke('planner:message:send', payload),
   cancelPlannerRun: (runId: string) => ipcRenderer.invoke('planner:run:cancel', runId),
+  listSubtasks: (payload: { featureId: number }) => ipcRenderer.invoke('subtasks:list', payload),
+  addSubtask: (payload: { featureId: number; title: string; status?: 'todo' | 'doing' | 'done'; orderIndex?: number | null }) =>
+    ipcRenderer.invoke('subtasks:add', payload),
+  updateSubtask: (payload: { subtaskId: number; title?: string; status?: 'todo' | 'doing' | 'done'; orderIndex?: number | null }) =>
+    ipcRenderer.invoke('subtasks:update', payload),
+  deleteSubtask: (payload: { subtaskId: number }) => ipcRenderer.invoke('subtasks:delete', payload),
+  reorderSubtasks: (payload: { featureId: number; orderedIds: number[] }) => ipcRenderer.invoke('subtasks:reorder', payload),
+  listSubtaskSummary: (payload: { featureIds: number[] }) => ipcRenderer.invoke('subtasks:summary', payload),
   listOrchestratorRuns: (repoId?: number) => ipcRenderer.invoke('orchestrator:runs:list', repoId),
   listOrchestratorTasks: (runId: string) => ipcRenderer.invoke('orchestrator:tasks:list', runId),
   listOrchestratorEvents: (runId: string) => ipcRenderer.invoke('orchestrator:events:list', runId),

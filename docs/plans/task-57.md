@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Add theme toggle in settings or top bar.\n- Provide labels and accessible states.\n- Ensure keyboard and screen reader support.\n- Add quick toggle for system/light/dark.\n\n## Risks/Assumptions\n- Assumes a consistent settings entry point exists.\n- Risk of overlapping with existing preferences UI.\n

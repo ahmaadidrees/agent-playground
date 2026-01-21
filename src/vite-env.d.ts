@@ -7,7 +7,9 @@ type Repo = {
   createdAt: string
 }
 
-type TaskStatus = 'proposed' | 'backlog' | 'in_progress' | 'review' | 'blocked' | 'failed' | 'canceled' | 'done'
+type TaskStatus = 'planned' | 'executed' | 'done' | 'archived'
+type SubtaskStatus = 'todo' | 'doing' | 'done'
+type AgentRole = 'worker' | 'validator'
 
 type Task = {
   id: number
@@ -20,6 +22,21 @@ type Task = {
   reviewRequestedAt: string | null
   reviewedAt: string | null
   reviewedByAgentId: number | null
+  baseRef: string | null
+  worktreePath: string | null
+  branchName: string | null
+  needsReview: boolean
+  planDocPath: string | null
+}
+
+type Subtask = {
+  id: number
+  featureId: number
+  title: string
+  status: SubtaskStatus
+  orderIndex: number | null
+  createdAt: string
+  updatedAt: string
 }
 
 type TaskNote = {
@@ -33,6 +50,7 @@ type Agent = {
   repoId: number
   name: string
   provider: 'claude' | 'gemini' | 'codex'
+  role: AgentRole
   workspacePath: string | null
   status: 'active' | 'paused'
   createdAt: string
@@ -50,9 +68,20 @@ type TaskValidation = {
   createdAt: string
 }
 
+type AgentEvent = {
+  id: number
+  repoId: number
+  agentId: number | null
+  taskId: number | null
+  kind: string
+  message: string
+  createdAt: string
+}
+
 type AgentSession = {
   id: number
   repoId: number
+  agentId: number | null
   taskId: number | null
   agentKey: 'claude' | 'gemini' | 'codex'
   createdAt: string
@@ -63,6 +92,26 @@ type AgentMessage = {
   sessionId: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  createdAt: string
+}
+
+type AgentRunSummary = {
+  id: string
+  sessionId: number
+  agentId: number | null
+  taskId: number | null
+  status: 'running' | 'succeeded' | 'failed' | 'canceled'
+  command: string
+  cwd: string
+  startedAt: string
+  endedAt: string | null
+}
+
+type AgentRunEvent = {
+  id: number
+  runId: string
+  kind: string
+  payload: string
   createdAt: string
 }
 
@@ -165,19 +214,48 @@ interface Window {
     deleteTask: (taskId: number) => Promise<{ id: number }>
     getTaskNote: (taskId: number) => Promise<TaskNote | null>
     saveTaskNote: (payload: { taskId: number; content: string }) => Promise<TaskNote>
+    updateTaskMetadata: (payload: {
+      taskId: number
+      baseRef?: string | null
+      worktreePath?: string | null
+      branchName?: string | null
+      needsReview?: boolean
+      planDocPath?: string | null
+    }) => Promise<Task>
+    listLatestTaskValidations: (payload: { taskIds: number[] }) => Promise<TaskValidation[]>
+    getTaskMergeStatus: (payload: { taskId: number }) => Promise<{ baseRef: string; branchName: string; ahead: number; behind: number; needsMerge: boolean; error?: string }>
     getDbPath: () => Promise<string>
     listAgents: (repoId?: number) => Promise<Agent[]>
-    createAgent: (payload: { repoId: number; name: string; provider: 'claude' | 'gemini' | 'codex'; workspacePath?: string | null }) => Promise<Agent>
+    createAgent: (payload: {
+      repoId: number
+      name: string
+      provider: 'claude' | 'gemini' | 'codex'
+      role?: AgentRole
+      workspacePath?: string | null
+    }) => Promise<Agent>
     updateAgent: (payload: {
       agentId: number
       name?: string
       provider?: 'claude' | 'gemini' | 'codex'
+      role?: AgentRole
       workspacePath?: string | null
       status?: 'active' | 'paused'
     }) => Promise<Agent>
     deleteAgent: (agentId: number) => Promise<{ id: number }>
+    listAgentEvents: (payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) => Promise<AgentEvent[]>
+    createAgentEvent: (payload: {
+      repoId: number
+      agentId?: number | null
+      taskId?: number | null
+      kind: string
+      message: string
+    }) => Promise<AgentEvent>
+    listAgentRuns: (payload: { repoId?: number; agentId?: number; taskId?: number; limit?: number }) => Promise<AgentRunSummary[]>
+    listAgentRunEvents: (payload: { runId: string; limit?: number }) => Promise<AgentRunEvent[]>
+    startAgentTaskRun: (payload: { taskId: number; agentId: number; message?: string }) => Promise<{ runId: string; sessionId: number }>
+    startFeatureThread: (payload: { taskId: number; agentKey?: 'claude' | 'gemini' | 'codex'; message?: string }) => Promise<{ session: AgentSession; runId: string; task: Task }>
     listAgentSessions: (repoId?: number) => Promise<AgentSession[]>
-    createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null }) => Promise<AgentSession>
+    createAgentSession: (payload: { repoId: number; agentKey: 'claude' | 'gemini' | 'codex'; taskId?: number | null; agentId?: number | null }) => Promise<AgentSession>
     listAgentMessages: (sessionId: number) => Promise<AgentMessage[]>
     sendAgentMessage: (payload: { sessionId: number; content: string }) => Promise<{ runId: string }>
     cancelAgentRun: (runId: string) => Promise<void>
@@ -203,6 +281,12 @@ interface Window {
     listPlannerMessages: (threadId: number) => Promise<PlannerMessage[]>
     sendPlannerMessage: (payload: { threadId: number; content: string }) => Promise<{ runId: string }>
     cancelPlannerRun: (runId: string) => Promise<void>
+    listSubtasks: (payload: { featureId: number }) => Promise<Subtask[]>
+    addSubtask: (payload: { featureId: number; title: string; status?: SubtaskStatus; orderIndex?: number | null }) => Promise<Subtask>
+    updateSubtask: (payload: { subtaskId: number; title?: string; status?: SubtaskStatus; orderIndex?: number | null }) => Promise<Subtask>
+    deleteSubtask: (payload: { subtaskId: number }) => Promise<{ id: number }>
+    reorderSubtasks: (payload: { featureId: number; orderedIds: number[] }) => Promise<Subtask[]>
+    listSubtaskSummary: (payload: { featureIds: number[] }) => Promise<Record<number, { todo: number; doing: number; done: number; total: number }>>
     listOrchestratorRuns: (repoId?: number) => Promise<OrchestratorRun[]>
     listOrchestratorTasks: (runId: string) => Promise<OrchestratorTaskRun[]>
     listOrchestratorEvents: (runId: string) => Promise<OrchestratorRunEvent[]>

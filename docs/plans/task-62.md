@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Implement raycasting for hover/selection.\n- Surface agent details on hover/click.\n- Add focus/zoom to selected agent.\n- Ensure keyboard alternatives exist.\n\n## Risks/Assumptions\n- Assumes UI has space for a details panel.\n- Risk of interaction conflicts with canvas gestures.\n

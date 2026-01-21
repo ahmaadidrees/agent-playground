@@ -1,0 +1,1 @@
+# Plan\n\n## Checklist\n- Add Three.js dependency and bundler config.\n- Create a basic scene/camera/renderer scaffold.\n- Establish a container component with resize handling.\n- Validate render loop and cleanup on unmount.\n\n## Risks/Assumptions\n- Assumes Three.js fits with current build setup.\n- Risk of heavy bundle impact without code splitting.\n

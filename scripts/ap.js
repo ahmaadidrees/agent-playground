@@ -69,7 +69,7 @@ function hasFlag(flag) {
 function printUsage() {
   console.log(`Usage:
   ap tasks list
-  ap tasks add "Title" [--status proposed|backlog|in_progress|done]
+  ap tasks add "Title" [--status planned|executed|done|archived]
   ap plan save <taskId> [path]
 
 Environment:
@@ -122,8 +122,8 @@ async function main() {
   }
 
   if (group === 'tasks' && action === 'add') {
-    const status = parseFlag('--status') ?? 'proposed'
-    const allowedStatuses = new Set(['proposed', 'backlog', 'in_progress', 'blocked', 'failed', 'canceled', 'done'])
+    const status = parseFlag('--status') ?? 'planned'
+    const allowedStatuses = new Set(['planned', 'executed', 'done', 'archived'])
     if (!allowedStatuses.has(status)) {
       exitWithError(`Invalid status: ${status}`)
     }
@@ -166,6 +166,7 @@ async function main() {
     fs.writeFileSync(resolvedPath, `${content.trim()}\n`, 'utf8')
 
     const noteContent = `Plan doc: ${relativePath}\n\n${content.trim()}`
+    db.prepare('UPDATE tasks SET plan_doc_path = ? WHERE id = ?').run(relativePath, taskId)
     db.prepare(
       "INSERT INTO task_notes (task_id, content, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(task_id) DO UPDATE SET content = excluded.content, updated_at = datetime('now')"
     ).run(taskId, noteContent)

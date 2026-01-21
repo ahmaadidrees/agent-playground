@@ -6,14 +6,10 @@ import {
   ChevronLeft,
   MoreHorizontal,
   CheckCircle2,
-  Clock,
   PlayCircle,
-  Inbox,
+  ClipboardList,
   Trash2,
-  AlertTriangle,
-  XCircle,
   Ban,
-  Eye,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { Agent, Task, TaskStatus } from '../types'
@@ -34,18 +30,14 @@ interface KanbanBoardProps {
 }
 
 const statusConfig: Record<TaskStatus, { title: string; icon: StatusIcon; color: string; bgColor: string }> = {
-  proposed: { title: 'Proposed', icon: Inbox, color: 'text-amber-500', bgColor: 'bg-amber-50' },
-  backlog: { title: 'Backlog', icon: Clock, color: 'text-blue-500', bgColor: 'bg-blue-50' },
-  in_progress: { title: 'In Progress', icon: PlayCircle, color: 'text-indigo-500', bgColor: 'bg-indigo-50' },
-  review: { title: 'Review', icon: Eye, color: 'text-violet-500', bgColor: 'bg-violet-50' },
-  blocked: { title: 'Blocked', icon: AlertTriangle, color: 'text-orange-500', bgColor: 'bg-orange-50' },
-  failed: { title: 'Failed', icon: XCircle, color: 'text-rose-500', bgColor: 'bg-rose-50' },
-  canceled: { title: 'Canceled', icon: Ban, color: 'text-slate-500', bgColor: 'bg-slate-100' },
+  planned: { title: 'Planned', icon: ClipboardList, color: 'text-[color:var(--accent)]', bgColor: 'bg-[color:var(--accent-ghost)]' },
+  executed: { title: 'Executed', icon: PlayCircle, color: 'text-indigo-500', bgColor: 'bg-indigo-50' },
   done: { title: 'Done', icon: CheckCircle2, color: 'text-emerald-500', bgColor: 'bg-emerald-50' },
+  archived: { title: 'Archived', icon: Ban, color: 'text-slate-500', bgColor: 'bg-slate-100' },
 }
 
-const statusOrder: TaskStatus[] = ['proposed', 'backlog', 'in_progress', 'review', 'blocked', 'failed', 'canceled', 'done']
-const progressionOrder: TaskStatus[] = ['proposed', 'backlog', 'in_progress', 'review', 'done']
+const statusOrder: TaskStatus[] = ['planned', 'executed', 'done', 'archived']
+const progressionOrder: TaskStatus[] = ['planned', 'executed', 'done']
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   tasks,
@@ -84,13 +76,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   }
 
   return (
-    <section className="flex flex-col gap-6 h-full min-h-0 bg-white/40 backdrop-blur-xl border border-amber-900/10 rounded-3xl shadow-xl p-6 overflow-hidden">
+    <section className="flex flex-col gap-6 h-full min-h-0 bg-[color:var(--panel-soft)] backdrop-blur-xl border border-[color:var(--border)] rounded-3xl shadow-xl p-6 overflow-hidden">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-amber-950 tracking-tight">Focus Board</h2>
-          <p className="text-sm text-amber-900/50 font-medium">Manage your active tasks and priorities</p>
-          <p className="text-[11px] text-amber-900/40 font-semibold">
-            Active agent: {activeAgent ? activeAgent.name : 'Select an agent to claim tasks'}
+          <h2 className="text-2xl font-bold text-[color:var(--text-strong)] tracking-tight">Focus Board</h2>
+          <p className="text-sm text-[color:var(--text-muted)] font-medium">Manage your active tasks and priorities</p>
+          <p className="text-[11px] text-[color:var(--text-subtle)] font-semibold">
+            Active agent: {activeAgent ? activeAgent.name : 'Select an agent to queue tasks'}
           </p>
         </div>
         <form onSubmit={handleAddTask} className="flex items-center gap-2">
@@ -100,13 +92,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
               value={newTaskInput}
               onChange={(e) => setNewTaskInput(e.target.value)}
               placeholder="Quick add task..."
-              className="pl-4 pr-10 py-2.5 bg-white border border-amber-900/10 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500/50 transition-all w-full md:w-64 shadow-sm"
+              className="pl-4 pr-10 py-2.5 bg-[color:var(--panel-solid)] border border-[color:var(--border)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)] focus:border-[color:var(--accent-border)] transition-all w-full md:w-64 shadow-sm"
               disabled={!isRepoSelected}
             />
             <button
               type="submit"
               disabled={!isRepoSelected || !newTaskInput.trim()}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-amber-500 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-30"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[color:var(--accent)] hover:bg-[color:var(--accent-ghost)] rounded-lg transition-colors disabled:opacity-30"
             >
               <Plus className="w-4 h-4" />
             </button>
@@ -120,16 +112,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
             const columnTasks = tasks.filter((t) => t.status === status)
             const config = statusConfig[status]
             return (
-              <div key={status} className="flex flex-col min-h-0 rounded-2xl border border-amber-900/10 bg-white/70 shadow-sm">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/10 bg-white/70 flex-shrink-0">
+              <div key={status} className="flex flex-col min-h-0 rounded-2xl border border-[color:var(--border)] bg-[color:var(--panel-strong)] shadow-sm">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border)] bg-[color:var(--panel-strong)] flex-shrink-0">
                   <div className="flex items-center gap-2">
                     <config.icon className={cn("w-4 h-4", config.color)} />
-                    <span className="font-bold text-xs uppercase tracking-wider text-amber-950/60">{config.title}</span>
-                    <span className="px-1.5 py-0.5 rounded-full bg-amber-900/5 text-[10px] font-bold text-amber-900/40">
+                    <span className="font-bold text-xs uppercase tracking-wider text-[color:var(--text-dim)]">{config.title}</span>
+                    <span className="px-1.5 py-0.5 rounded-full bg-[color:var(--chip-bg)] text-[10px] font-bold text-[color:var(--text-subtle)]">
                       {columnTasks.length}
                     </span>
                   </div>
-                  <button className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 transition-colors">
+                  <button className="p-1 hover:bg-[color:var(--accent-ghost)] rounded-md text-[color:var(--text-faint)] transition-colors">
                     <MoreHorizontal className="w-4 h-4" />
                   </button>
                 </div>
@@ -140,7 +132,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        className="h-24 rounded-2xl border-2 border-dashed border-amber-900/10 flex items-center justify-center text-[11px] text-amber-900/20 font-medium text-center px-4"
+                        className="h-24 rounded-2xl border-2 border-dashed border-[color:var(--border)] flex items-center justify-center text-[11px] text-[color:var(--text-faint)] font-medium text-center px-4"
                       >
                         Drop tasks here
                       </motion.div>
@@ -154,41 +146,41 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                           exit={{ opacity: 0, scale: 0.95, y: -10 }}
                           onClick={() => onSelectTask(task.id)}
                           className={cn(
-                            "group p-4 rounded-2xl border bg-white shadow-sm hover:shadow-md hover:border-amber-500/30 transition-all cursor-pointer flex flex-col gap-3 relative overflow-hidden",
-                            activeTaskId === task.id ? "border-amber-500 ring-2 ring-amber-500/10" : "border-amber-900/5"
+                            "group p-4 rounded-2xl border bg-[color:var(--panel-solid)] shadow-sm hover:shadow-md hover:border-[color:var(--accent-border)] transition-all cursor-pointer flex flex-col gap-3 relative overflow-hidden",
+                            activeTaskId === task.id ? "border-[color:var(--accent-border)] ring-2 ring-[color:var(--ring)]" : "border-[color:var(--border-soft)]"
                         )}
                       >
                         {activeTaskId === task.id && (
-                          <div className="absolute top-0 left-0 w-1 h-full bg-amber-500" />
+                          <div className="absolute top-0 left-0 w-1 h-full bg-[color:var(--accent)]" />
                         )}
-                        <h3 className="font-semibold text-[13px] text-amber-950 leading-tight group-hover:text-amber-600 transition-colors">
+                        <h3 className="font-semibold text-[13px] text-[color:var(--text-strong)] leading-tight group-hover:text-[color:var(--accent)] transition-colors">
                           {task.title}
                         </h3>
 
                         {task.assignedAgentId && (
                           <div className="flex items-center gap-2">
-                            <span className="px-2 py-1 rounded-full bg-amber-900/5 text-[10px] font-bold uppercase tracking-widest text-amber-900/50">
+                            <span className="px-2 py-1 rounded-full bg-[color:var(--chip-bg)] text-[10px] font-bold uppercase tracking-widest text-[color:var(--chip-text)]">
                               {agentById.get(task.assignedAgentId)?.name ?? `Agent ${task.assignedAgentId}`}
                             </span>
                           </div>
                         )}
                         
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] text-amber-900/40 font-medium">
+                          <span className="text-[10px] text-[color:var(--text-subtle)] font-medium">
                             #{task.id}
                           </span>
                           <div className="flex items-center gap-1">
-                            {!task.assignedAgentId && task.status !== 'done' && task.status !== 'canceled' && (
+                            {!task.assignedAgentId && task.status !== 'done' && task.status !== 'archived' && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   onClaimTask(task.id)
                                 }}
                                 disabled={!activeAgentId}
-                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest text-amber-600 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
-                                title={activeAgentId ? 'Claim task' : 'Select an agent to claim'}
+                                className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest text-[color:var(--accent)] hover:text-[color:var(--accent-strong)] hover:bg-[color:var(--accent-ghost)] transition-colors disabled:opacity-40"
+                                title={activeAgentId ? 'Queue task' : 'Select an agent to queue'}
                               >
-                                Claim
+                                Queue
                               </button>
                             )}
                             {progressionOrder.indexOf(task.status) > 0 && (
@@ -197,7 +189,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                                   e.stopPropagation()
                                   handleStepTask(task, 'prev')
                                 }}
-                                className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
+                                className="p-1 hover:bg-[color:var(--accent-ghost)] rounded-md text-[color:var(--text-faint)] hover:text-[color:var(--accent)] transition-colors"
                               >
                                 <ChevronLeft className="w-3 h-3" />
                               </button>
@@ -208,7 +200,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                                   e.stopPropagation()
                                   handleStepTask(task, 'next')
                                 }}
-                                className="p-1 hover:bg-amber-50 rounded-md text-amber-900/30 hover:text-amber-600 transition-colors"
+                                className="p-1 hover:bg-[color:var(--accent-ghost)] rounded-md text-[color:var(--text-faint)] hover:text-[color:var(--accent)] transition-colors"
                               >
                                 <ChevronRight className="w-3 h-3" />
                               </button>
